@@ -13,14 +13,19 @@
    To enable MQTT, add an Ethernet shield and uncomment the MQTT sections
 */
 // MQTT Libraries (disabled)
-// #include <PubSubClient.h>
-// #include <Ethernet.h>
+#include <PubSubClient.h>
+#include <Ethernet.h>
 
 // ==================== CONFIGURATION ====================
 const int numCuffs = 8;
 const int touchPins[numCuffs] = {22, 23, 24, 25, 26, 27, 28, 29};
-const int hallPins[numCuffs] = {30, 31, 32, 46, 34,48, 36, 37}; // Pins 3 and 5 disabled
+const int hallPins[numCuffs] = {30, 31, 32, 33, 34, 35, 36, 37};
 const int relayPins[numCuffs] = {38, 39, 40, 41, 42, 43, 44, 45};
+
+const int espResetPin = 49;
+const int espOpenPin = 50;
+const int espClosePin = 51;
+
 
 const unsigned long debounceDelay = 50;
 const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
@@ -55,11 +60,16 @@ bool lastSolutionCheck = false;
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
-  //while (!Serial) { ; }   //loop until serial communication is established with a host.
+  while (!Serial) { ; }   //loop until serial communication is established with a host.
 
   Serial.println("\n=== CAPTAIN'S CUFFS - HALL SENSOR VERSION ===");
   Serial.println("Platform: Arduino Mega");
   Serial.println("Initializing hardware...");
+
+  //Initialize esp pins and state
+  pinMode(espResetPin,INPUT_PULLUP);
+  pinMode(espOpenPin,INPUT_PULLUP);
+  pinMode(espClosePin,INPUT_PULLUP);
 
   // Initialize pins and state
   for (int i = 0; i < numCuffs; i++) {
@@ -120,7 +130,7 @@ void loop() {
   }
   mqtt.loop();
   */
-
+  handleESPCommands();
   // Handle auto-reset after puzzle solved
   if (puzzleSolved && (millis() - puzzleSolvedTime >= autoResetDelay)) {
     resetPuzzle();
@@ -137,9 +147,9 @@ void loop() {
   // Read all sensors and detect changes
   for (int i = 0; i < numCuffs; i++) {
     // Skip disabled cuffs 3 and 5
-    //if (i == 3 || i == 5) {
-    //  continue;
-    //}
+    if (i == 3 || i == 5) {
+     continue;
+    }
 
     // Skip disabled hall sensors
     bool magnetDetected = (hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW) : false;
@@ -429,7 +439,15 @@ void publishStatus() {
   mqtt.publish("cuffs/summary", summary.c_str());
 }
 */
-
+// ==================== ESP COMMANDS ==================
+void handleESPCommands(){
+    if(digitalRead(espResetPin)) 
+      resetPuzzle();
+    if(digitalRead(espClosePin))
+      closeAllCuffs();
+    if(digitalRead(espOpenPin))
+      openAllCuffs();
+}
 // ==================== SERIAL COMMANDS ====================
 void handleSerialCommand() {
   String command = Serial.readStringUntil('\n');
