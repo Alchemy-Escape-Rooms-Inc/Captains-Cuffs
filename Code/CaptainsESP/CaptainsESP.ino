@@ -15,13 +15,17 @@ const char * password = "VoodooVacation5601";
 const char * mqttServer = "10.1.10.115";
 const char * topic = "MermaidsTale/CaptainsESP"; 
 
+const unsigned long ackDuration = 5 * 1000UL;            //5s, time is takes for the arduino to acknowledge the commands
+unsigned long startTime;
+
+
 // *************** FUNCTIONS  *******************
 //WIFI NETWORK
 void setup_wifi() {
   delay(1000);
   Serial.println("*********** WIFI ***********");
-  Serial.print("\n Connecting to ");
-  Serial.print(ssid);
+  Serial.print("Connecting to SSID: ");
+  Serial.println(ssid);
 
   WiFi.begin(ssid,password);
 
@@ -35,7 +39,7 @@ void setup_wifi() {
 //MQTT SERVER
 void reconnect() {
   while (!mqtt.connected()) {
-    Serial.print("******** MQTT SERVER ********");
+    Serial.println("******** MQTT SERVER ********");
     if (mqtt.connect("ESP32 WROOM")) {
       Serial.print("Connection to broker established: ");
       Serial.println(mqttServer);
@@ -56,18 +60,21 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String message = "";
   for (unsigned int i = 0; i < length; i++)
     message += (char)payload[i];
+  
   Serial.print("MQTT received: ");
   Serial.print(topic);
   Serial.print(" = ");
   Serial.println(message);
 
-  if (strcmp(topic, "OpenCuffs") == 0) {
+  if (strcmp(message.c_str(), "OpenCuffs") == 0) {
     openCuffs();
-  } else if (strcmp(topic, "CloseCuffs") == 0){
+  } else if (strcmp(message.c_str(), "CloseCuffs") == 0){
     closeCuffs();
-  }else if (strcmp(topic, "Reset Game") == 0){
+  }else if (strcmp(message.c_str(), "Reset Game") == 0){
     resetGame();
   }
+  
+  startTime = millis();
 }
 
 void setup_server(){
@@ -90,13 +97,18 @@ void setup_io(){
 void openCuffs(){
   digitalWrite(OPEN_PIN,LOW);
 }
-
 void closeCuffs(){
   digitalWrite(CLOSE_PIN,LOW);
 }
-
 void resetGame(){
   digitalWrite(RESET_PIN,LOW);
+}
+
+void resetParams(){
+  digitalWrite(OPEN_PIN,HIGH);
+  digitalWrite(CLOSE_PIN,HIGH);
+  digitalWrite(RESET_PIN,HIGH);
+  startTime = 0;
 }
 
 void program(){
@@ -105,16 +117,18 @@ void program(){
   }
   mqtt.loop();
 
+  //if startTime is not 0
+  if(startTime)
+    if(millis() - startTime > ackDuration)
+      resetParams();
+  
 }
 
-void resetPins(){
-  digitalWrite(OPEN_PIN,HIGH);
-  digitalWrite(CLOSE_PIN,HIGH);
-  digitalWrite(RESET_PIN,HIGH);
-}
 void _init(){
   //io setup
   setup_io();
+  //network setup
+  setup_wifi();
   //mqtt setup
   setup_server();
 }
