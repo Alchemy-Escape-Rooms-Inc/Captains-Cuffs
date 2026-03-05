@@ -12,16 +12,20 @@
    MQTT Support: Currently disabled (Arduino Mega has no WiFi/Ethernet)
    To enable MQTT, add an Ethernet shield and uncomment the MQTT sections
 */
-
 // MQTT Libraries (disabled)
-// #include <PubSubClient.h>
-// #include <Ethernet.h>
+#include <PubSubClient.h>
+#include <Ethernet.h>
 
 // ==================== CONFIGURATION ====================
 const int numCuffs = 8;
 const int touchPins[numCuffs] = {22, 23, 24, 25, 26, 27, 28, 29};
-const int hallPins[numCuffs] = {30, 31, 32, /*33*/ -1, 34, /*35*/ -1, 36, 37}; // Pins 3 and 5 disabled
+const int hallPins[numCuffs] = {30, 31, 32, 33, 34, 35, 36, 37};
 const int relayPins[numCuffs] = {38, 39, 40, 41, 42, 43, 44, 45};
+
+const int espResetPin = 49;
+const int espOpenPin = 50;
+const int espClosePin = 51;
+
 
 const unsigned long debounceDelay = 50;
 const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
@@ -56,11 +60,16 @@ bool lastSolutionCheck = false;
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
-  while (!Serial) { ; }
+  while (!Serial) { ; }   //loop until serial communication is established with a host.
 
   Serial.println("\n=== CAPTAIN'S CUFFS - HALL SENSOR VERSION ===");
   Serial.println("Platform: Arduino Mega");
   Serial.println("Initializing hardware...");
+
+  //Initialize esp pins and state
+  pinMode(espResetPin,INPUT_PULLUP);
+  pinMode(espOpenPin,INPUT_PULLUP);
+  pinMode(espClosePin,INPUT_PULLUP);
 
   // Initialize pins and state
   for (int i = 0; i < numCuffs; i++) {
@@ -121,7 +130,7 @@ void loop() {
   }
   mqtt.loop();
   */
-
+  handleESPCommands();
   // Handle auto-reset after puzzle solved
   if (puzzleSolved && (millis() - puzzleSolvedTime >= autoResetDelay)) {
     resetPuzzle();
@@ -139,7 +148,7 @@ void loop() {
   for (int i = 0; i < numCuffs; i++) {
     // Skip disabled cuffs 3 and 5
     if (i == 3 || i == 5) {
-      continue;
+     continue;
     }
 
     // Skip disabled hall sensors
@@ -258,39 +267,46 @@ void resetPuzzle() {
   // mqtt.publish("cuffs/status", "reset"); // MQTT disabled
 }
 
+
+void openCuff(byte index){
+    digitalWrite(relayPins[index], LOW);
+    cuffs[index].released = true;
+    Serial.print("Cuff ");
+    Serial.print(index);
+    Serial.println(" opened");
+}
+
 void openAllCuffs() {
   Serial.println("\n=== OPENING ALL CUFFS ===");
 
-  for (int i = 0; i < numCuffs; i++) {
-    digitalWrite(relayPins[i], LOW);
-    cuffs[i].released = true;
-    Serial.print("Cuff ");
-    Serial.print(i);
-    Serial.println(" opened");
-  }
+  for (int i = 0; i < numCuffs; i++)
+    openCuff(i);
 
   Serial.println("All cuffs opened\n");
   // publishStatus(); // MQTT disabled
   // mqtt.publish("cuffs/status", "all_released"); // MQTT disabled
 }
 
+
+void closeCuff(byte index){
+    digitalWrite(relayPins[index], HIGH);
+    cuffs[index].released = false;
+    Serial.print("Cuff ");
+    Serial.print(index);
+    Serial.println(" closed");
+}
+
+
 void closeAllCuffs() {
   Serial.println("\n=== CLOSING ALL CUFFS ===");
 
-  for (int i = 0; i < numCuffs; i++) {
-    digitalWrite(relayPins[i], HIGH);
-    cuffs[i].released = false;
-    Serial.print("Cuff ");
-    Serial.print(i);
-    Serial.println(" closed");
-  }
-
+  for (int i = 0; i < numCuffs; i++)
+    closeCuff(i);
   puzzleSolved = false;
   Serial.println("All cuffs closed\n");
   // publishStatus(); // MQTT disabled
   // mqtt.publish("cuffs/status", "all_locked"); // MQTT disabled
 }
-
 // ==================== STATUS DISPLAY ====================
 void printDetailedStatus() {
   Serial.println("\n=== SYSTEM STATUS ===");
@@ -320,10 +336,10 @@ void printDetailedStatus() {
     Serial.print("  |   ");
 
     // Disable cuffs 3 and 5
-    if (i == 3 || i == 5) {
-      Serial.println("DISABLED   |   DISABLED    |   DISABLED");
-      continue;
-    }
+    //if (i == 3 || i == 5) {
+    //  Serial.println("DISABLED   |   DISABLED    |   DISABLED");
+    //  continue;
+    //}
 
     Serial.print(isLocked ? "LOCKED   " : "UNLOCKED ");
     Serial.print(" |   ");
@@ -423,7 +439,15 @@ void publishStatus() {
   mqtt.publish("cuffs/summary", summary.c_str());
 }
 */
-
+// ==================== ESP COMMANDS ==================
+void handleESPCommands(){
+    if(digitalRead(espResetPin)) 
+      resetPuzzle();
+    if(digitalRead(espClosePin))
+      closeAllCuffs();
+    if(digitalRead(espOpenPin))
+      openAllCuffs();
+}
 // ==================== SERIAL COMMANDS ====================
 void handleSerialCommand() {
   String command = Serial.readStringUntil('\n');
@@ -450,6 +474,10 @@ void handleSerialCommand() {
     testAllComponents();
   } else if (command == "help") {
     printHelp();
+  } else if (command.startsWith("open cuff") || command.startsWith("opencuff")){
+    (command.length() > 10) ? openCuff(command.substring(11).toInt()) : openCuff(command.substring(10).toInt());
+  } else if (command.startsWith("close cuff") || command.startsWith("closecuff")){
+    (command.length() > 11) ? openCuff(command.substring(12).toInt()) : openCuff(command.substring(11).toInt());
   } else if (command.length() > 0) {
     Serial.println("Unknown command. Type 'help' for available commands.");
   }
