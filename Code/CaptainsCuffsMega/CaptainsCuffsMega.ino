@@ -9,12 +9,11 @@
    - Hall sensors: Detect magnet when cuff locked (LOW = magnet detected with INPUT_PULLUP)
    - Relays: Control cuff locks (HIGH = locked, LOW = released)
 
-   MQTT Support: Currently disabled (Arduino Mega has no WiFi/Ethernet)
-   To enable MQTT, add an Ethernet shield and uncomment the MQTT sections
 */
-// MQTT Libraries (disabled)
-#include <PubSubClient.h>
-#include <Ethernet.h>
+
+
+#define VERSION "1.0.0"
+
 
 // ==================== CONFIGURATION ====================
 const int numCuffs = 8;
@@ -29,12 +28,6 @@ const int espClosePin = 51;
 
 const unsigned long debounceDelay = 50;
 const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
-
-// MQTT Configuration (disabled)
-// byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
-// IPAddress mqttServer(192, 168, 1, 100);
-// const char* mqttClientId = "CaptainsCuffs";
-// const int mqttPort = 1883;
 
 // ==================== STATE VARIABLES ====================
 struct CuffState {
@@ -53,13 +46,11 @@ bool lastCuffStates[numCuffs];
 bool lastTouchStates[numCuffs];
 bool lastSolutionCheck = false;
 
-// ==================== NETWORK (DISABLED) ====================
-// EthernetClient ethClient;
-// PubSubClient mqtt(ethClient);
-
+String incoming = "";
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
+  Serial1.begin(115200);  //communication between the Arduino Mega and the ESP8266
   while (!Serial) { ; }   //loop until serial communication is established with a host.
 
   Serial.println("\n=== CAPTAIN'S CUFFS - HALL SENSOR VERSION ===");
@@ -96,26 +87,6 @@ void setup() {
   Serial.println("Stabilizing sensors...");
   delay(100);
 
-  // MQTT/Network Initialization (disabled)
-  /*
-  Serial.print("Initializing Ethernet...");
-  if (Ethernet.begin(mac) == 0) {
-    Serial.println(" FAILED (using DHCP)");
-    Serial.println("Trying static IP...");
-    IPAddress ip(192, 168, 1, 177);
-    IPAddress dns(192, 168, 1, 1);
-    IPAddress gateway(192, 168, 1, 1);
-    IPAddress subnet(255, 255, 255, 0);
-    Ethernet.begin(mac, ip, dns, gateway, subnet);
-  }
-  Serial.print(" OK - IP: ");
-  Serial.println(Ethernet.localIP());
-
-  mqtt.setServer(mqttServer, mqttPort);
-  mqtt.setCallback(mqttCallback);
-  connectMQTT();
-  */
-
   Serial.println("\n=== SYSTEM READY ===");
   Serial.println("Monitoring for state changes...");
   Serial.println("Type 'help' for available commands\n");
@@ -123,14 +94,17 @@ void setup() {
 
 // ==================== MAIN LOOP ====================
 void loop() {
-  // MQTT Maintenance (disabled)
-  /*
-  if (!mqtt.connected()) {
-    connectMQTT();
+
+  while(Serial1.available()){
+    char c = Serial1.read();
+    if(c == '\n') {
+      incoming.trim();
+      handleESPCommand(incoming);
+      incoming = "";
+    } else {
+      incoming += c;
+    }
   }
-  mqtt.loop();
-  */
-  handleESPCommands();
   // Handle auto-reset after puzzle solved
   if (puzzleSolved && (millis() - puzzleSolvedTime >= autoResetDelay)) {
     resetPuzzle();
@@ -350,51 +324,7 @@ void printDetailedStatus() {
   Serial.println("===============================================\n");
 }
 
-// ==================== MQTT (DISABLED) ====================
 /*
-void connectMQTT() {
-  Serial.print("Connecting to MQTT broker...");
-
-  int attempts = 0;
-  while (!mqtt.connected() && attempts < 5) {
-    if (mqtt.connect(mqttClientId)) {
-      Serial.println(" CONNECTED");
-      mqtt.subscribe("cuffs/command/#");
-      mqtt.publish("cuffs/status", "online");
-      publishStatus();
-      return;
-    }
-    Serial.print(".");
-    delay(1000);
-    attempts++;
-  }
-
-  Serial.println(" FAILED (continuing without MQTT)");
-}
-
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String message = "";
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-
-  Serial.print("MQTT received: ");
-  Serial.print(topic);
-  Serial.print(" = ");
-  Serial.println(message);
-
-  if (strcmp(topic, "cuffs/command/reset") == 0) {
-    resetPuzzle();
-  } else if (strcmp(topic, "cuffs/command/status") == 0) {
-    printDetailedStatus();
-    publishStatus();
-  } else if (strcmp(topic, "cuffs/command/lockall") == 0) {
-    closeAllCuffs();
-  } else if (strcmp(topic, "cuffs/command/releaseall") == 0) {
-    openAllCuffs();
-  }
-}
-
 void publishStatus() {
   if (!mqtt.connected()) return;
 
@@ -440,13 +370,22 @@ void publishStatus() {
 }
 */
 // ==================== ESP COMMANDS ==================
-void handleESPCommands(){
-    if(digitalRead(espResetPin)) 
-      resetPuzzle();
-    if(digitalRead(espClosePin))
-      closeAllCuffs();
-    if(digitalRead(espOpenPin))
-      openAllCuffs();
+void sendCommand(String cmd){
+  Serial1.println(cmd);
+}
+
+void handleESPCommand(String cmd){
+  if(cmd == "PING"){
+    sendCommand("PONG");
+  } else if (cmd == "STATUS") {
+    sendCommand(puzzleSolved ? "SOLVED" : "READY");
+  } else if (cmd == "PUZZLE_RESET") {
+    sendCommand("RESET");
+    resetPuzzle();
+  } else if (cmd == "SOLVE"){
+    puzzleSolved = true;
+    sendCommand("MANUALLY_SOLVED");
+  }
 }
 // ==================== SERIAL COMMANDS ====================
 void handleSerialCommand() {
@@ -458,9 +397,9 @@ void handleSerialCommand() {
     printDetailedStatus();
     // publishStatus(); // MQTT disabled
   } else if (command == "reset") {
-    Serial.println("Manual reset triggered");
     resetPuzzle();
-  } else if (command == "open all" || command == "openall") {
+  } 
+  else if (command == "open all" || command == "openall") {
     openAllCuffs();
   } else if (command == "close all" || command == "closeall") {
     closeAllCuffs();
@@ -474,13 +413,8 @@ void handleSerialCommand() {
     testAllComponents();
   } else if (command == "help") {
     printHelp();
-  } else if (command.startsWith("open cuff") || command.startsWith("opencuff")){
-    (command.length() > 10) ? openCuff(command.substring(11).toInt()) : openCuff(command.substring(10).toInt());
-  } else if (command.startsWith("close cuff") || command.startsWith("closecuff")){
-    (command.length() > 11) ? openCuff(command.substring(12).toInt()) : openCuff(command.substring(11).toInt());
-  } else if (command.length() > 0) {
-    Serial.println("Unknown command. Type 'help' for available commands.");
-  }
+  } 
+
 }
 
 void testAllRelays() {
