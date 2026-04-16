@@ -2,12 +2,12 @@
    Alchemy Escape Room "Captain's Cuffs"
    HALL SENSOR VERSION - Arduino Mega
 
-   Puzzle: All engaged cuffs must have their touch sensors activated simultaneously to release
+Puzzle: All engaged cuffs must have their touch sensors activated simultaneously to release
 
-   Hardware:
-   - Touch sensors: Detect player touch (HIGH = touched)
-   - Hall sensors: Detect magnet when cuff locked (LOW = magnet detected with INPUT_PULLUP)
-   - Relays: Control cuff locks (HIGH = locked, LOW = released)
+Hardware:
+- Touch sensors: Detect player touch (HIGH = touched)
+- Hall sensors: Detect magnet when cuff locked (LOW = magnet detected with INPUT_PULLUP)
+- Relays: Control cuff locks (HIGH = locked, LOW = released)
 
 */
 
@@ -50,7 +50,7 @@ String incoming = "";
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
-  Serial1.begin(115200);  //communication between the Arduino Mega and the ESP8266
+  Serial3.begin(115200);  //communication between the Arduino Mega and the ESP8266
   while (!Serial) { ; }   //loop until serial communication is established with a host.
 
   Serial.println("\n=== CAPTAIN'S CUFFS - HALL SENSOR VERSION ===");
@@ -92,19 +92,20 @@ void setup() {
   Serial.println("Type 'help' for available commands\n");
 }
 
+void printSensorsStatus(){
+  //cuffs status
+  for(int i = 0; i < 8; i++)
+    Serial3.println("c" + String(i) + ":" + ((lastCuffStates[i]) ? "c":"o"));
+  //touchsensors status
+  for(int i = 0; i < 8; i++)
+    Serial3.println("s" + String(i) + ":" + ((lastTouchStates[i]) ? "t":"nt"));
+}
+
+
 // ==================== MAIN LOOP ====================
 void loop() {
 
-  while(Serial1.available()){
-    char c = Serial1.read();
-    if(c == '\n') {
-      incoming.trim();
-      handleESPCommand(incoming);
-      incoming = "";
-    } else {
-      incoming += c;
-    }
-  }
+  receiveESPCommand();
   // Handle auto-reset after puzzle solved
   if (puzzleSolved && (millis() - puzzleSolvedTime >= autoResetDelay)) {
     resetPuzzle();
@@ -121,9 +122,9 @@ void loop() {
   // Read all sensors and detect changes
   for (int i = 0; i < numCuffs; i++) {
     // Skip disabled cuffs 3 and 5
-    if (i == 3 || i == 5) {
-     continue;
-    }
+    //if (i == 3 || i == 5) {
+    //  continue;
+    //}
 
     // Skip disabled hall sensors
     bool magnetDetected = (hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW) : false;
@@ -146,6 +147,10 @@ void loop() {
       Serial.println(digitalRead(relayPins[i]) == HIGH ? "LOCKED" : "UNLOCKED");
       lastCuffStates[i] = magnetDetected;
       stateChanged = true;
+
+      //MQTT stuff
+      Serial3.println("c" + String(i) + ":" + ((magnetDetected) ? "c":"o"));
+
     }
 
     if (currentTouch != lastTouchStates[i]) {
@@ -161,6 +166,9 @@ void loop() {
       Serial.println(digitalRead(relayPins[i]) == HIGH ? "LOCKED" : "UNLOCKED");
       lastTouchStates[i] = currentTouch;
       stateChanged = true;
+
+      //MQTT stuff
+      Serial3.println("s" + String(i) + ":" + ((currentTouch) ? "t":"nt"));
     }
 
     // Count active components
@@ -186,6 +194,8 @@ void loop() {
     Serial.println(" - SOLVING PUZZLE!");
     releaseCuffs();
     stateChanged = true;
+    //MQTT stuff
+    Serial3.println(String("p:") + String(((puzzleSolved) ? "s":"ns")));
   }
 
   lastSolutionCheck = currentSolutionStatus;
@@ -243,11 +253,11 @@ void resetPuzzle() {
 
 
 void openCuff(byte index){
-    digitalWrite(relayPins[index], LOW);
-    cuffs[index].released = true;
-    Serial.print("Cuff ");
-    Serial.print(index);
-    Serial.println(" opened");
+  digitalWrite(relayPins[index], LOW);
+  cuffs[index].released = true;
+  Serial.print("Cuff ");
+  Serial.print(index);
+  Serial.println(" opened");
 }
 
 void openAllCuffs() {
@@ -263,11 +273,11 @@ void openAllCuffs() {
 
 
 void closeCuff(byte index){
-    digitalWrite(relayPins[index], HIGH);
-    cuffs[index].released = false;
-    Serial.print("Cuff ");
-    Serial.print(index);
-    Serial.println(" closed");
+  digitalWrite(relayPins[index], HIGH);
+  cuffs[index].released = false;
+  Serial.print("Cuff ");
+  Serial.print(index);
+  Serial.println(" closed");
 }
 
 
@@ -324,67 +334,80 @@ void printDetailedStatus() {
   Serial.println("===============================================\n");
 }
 
+
+
+
+
+
+
+
+
 /*
-void publishStatus() {
-  if (!mqtt.connected()) return;
+   void publishStatus() {
+   if (!mqtt.connected()) return;
 
-  // Detailed JSON status
-  String status = "{";
-  status += "\"solved\":" + String(puzzleSolved ? "true" : "false");
-  status += ",\"cuffs\":[";
+// Detailed JSON status
+String status = "{";
+status += "\"solved\":" + String(puzzleSolved ? "true" : "false");
+status += ",\"cuffs\":[";
 
-  for (int i = 0; i < numCuffs; i++) {
-    if (i > 0) status += ",";
-    status += "{\"id\":" + String(i);
-    status += ",\"engaged\":" + String(cuffs[i].engaged ? "true" : "false");
-    status += ",\"touched\":" + String(cuffs[i].touched ? "true" : "false");
-    status += ",\"released\":" + String(cuffs[i].released ? "true" : "false");
-    status += "}";
-  }
+for (int i = 0; i < numCuffs; i++) {
+if (i > 0) status += ",";
+status += "{\"id\":" + String(i);
+status += ",\"engaged\":" + String(cuffs[i].engaged ? "true" : "false");
+status += ",\"touched\":" + String(cuffs[i].touched ? "true" : "false");
+status += ",\"released\":" + String(cuffs[i].released ? "true" : "false");
+status += "}";
+}
 
-  status += "]}";
-  mqtt.publish("cuffs/status", status.c_str());
+status += "]}";
+mqtt.publish("cuffs/status", status.c_str());
 
-  // Clean human-readable lock status
-  String lockStatus = "Cuffs: ";
-  for (int i = 0; i < numCuffs; i++) {
-    bool isLocked = digitalRead(relayPins[i]) == HIGH;
-    lockStatus += String(i) + "=";
-    lockStatus += isLocked ? "LOCKED" : "UNLOCKED";
-    if (i < numCuffs - 1) lockStatus += ", ";
-  }
-  mqtt.publish("cuffs/locks", lockStatus.c_str());
+// Clean human-readable lock status
+String lockStatus = "Cuffs: ";
+for (int i = 0; i < numCuffs; i++) {
+bool isLocked = digitalRead(relayPins[i]) == HIGH;
+lockStatus += String(i) + "=";
+lockStatus += isLocked ? "LOCKED" : "UNLOCKED";
+if (i < numCuffs - 1) lockStatus += ", ";
+}
+mqtt.publish("cuffs/locks", lockStatus.c_str());
 
-  // Summary counts
-  int lockedCount = 0;
-  int engagedCount = 0;
-  for (int i = 0; i < numCuffs; i++) {
-    if (digitalRead(relayPins[i]) == HIGH) lockedCount++;
-    if (cuffs[i].engaged) engagedCount++;
-  }
+// Summary counts
+int lockedCount = 0;
+int engagedCount = 0;
+for (int i = 0; i < numCuffs; i++) {
+if (digitalRead(relayPins[i]) == HIGH) lockedCount++;
+if (cuffs[i].engaged) engagedCount++;
+}
 
-  String summary = "Locked: " + String(lockedCount) + "/" + String(numCuffs) +
-                   " | Engaged: " + String(engagedCount) + "/" + String(numCuffs) +
-                   " | Status: " + String(puzzleSolved ? "SOLVED" : "ACTIVE");
-  mqtt.publish("cuffs/summary", summary.c_str());
+String summary = "Locked: " + String(lockedCount) + "/" + String(numCuffs) +
+" | Engaged: " + String(engagedCount) + "/" + String(numCuffs) +
+" | Status: " + String(puzzleSolved ? "SOLVED" : "ACTIVE");
+mqtt.publish("cuffs/summary", summary.c_str());
 }
 */
 // ==================== ESP COMMANDS ==================
+void receiveESPCommand(){
+  while(Serial3.available()){
+    char c = Serial3.read();
+    if(c == '\n') {
+      incoming.trim();
+      handleESPCommand(incoming);
+      incoming = "";
+    } else {
+      incoming += c;
+    }
+  }
+}
+
 void sendCommand(String cmd){
-  Serial1.println(cmd);
+  Serial3.println(cmd);
 }
 
 void handleESPCommand(String cmd){
-  if(cmd == "PING"){
-    sendCommand("PONG");
-  } else if (cmd == "STATUS") {
-    sendCommand(puzzleSolved ? "SOLVED" : "READY");
-  } else if (cmd == "PUZZLE_RESET") {
-    sendCommand("RESET");
-    resetPuzzle();
-  } else if (cmd == "SOLVE"){
-    puzzleSolved = true;
-    sendCommand("MANUALLY_SOLVED");
+  if(strcmp(cmd.c_str(),"displayStatus") == 0){
+    printSensorsStatus();
   }
 }
 // ==================== SERIAL COMMANDS ====================
@@ -398,7 +421,7 @@ void handleSerialCommand() {
     // publishStatus(); // MQTT disabled
   } else if (command == "reset") {
     resetPuzzle();
-  } 
+  }
   else if (command == "open all" || command == "openall") {
     openAllCuffs();
   } else if (command == "close all" || command == "closeall") {
@@ -413,7 +436,7 @@ void handleSerialCommand() {
     testAllComponents();
   } else if (command == "help") {
     printHelp();
-  } 
+  }
 
 }
 
