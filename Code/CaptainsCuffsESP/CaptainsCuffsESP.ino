@@ -37,33 +37,31 @@ unsigned long lastTime = 0;
 
 
 // *************** FUNCTIONS  *******************
-//WIFI NETWORK
-void setup_wifi() {
+void setupWiFi() {
   delay(1000);
-  //Serial.println("*********** WIFI ***********");
-  //Serial.print("Connecting to SSID: ");
-  //Serial.println(WIFI_SSID);
+  Serial.println("*********** WIFI ***********");
+  Serial.print("Connecting to SSID: ");
+  Serial.println(WIFI_SSID);
 
   WiFi.begin(WIFI_SSID,WIFI_PASS);
 
   while(WiFi.status() != WL_CONNECTED){
     delay(100);
-    //Serial.print("-");
+    Serial.print("-");
   }
-  //Serial.println("\nConnected.");
+  Serial.println("\nConnected.");
 }
-
-//MQTT SERVER
+//========== MQTT SERVER ================
 void connectMQTT() {
   while (!mqttClient.connected()) {
-    //Serial.print("Connecting to MQTT...");
+    Serial.print("Connecting to MQTT...");
 
     String clientId = PROP_NAME;
     clientId += "_";
     clientId += String(random(0xffff), HEX);
 
     if (mqttClient.connect(clientId.c_str())) {
-      //Serial.println("connected!");
+      Serial.println("connected!");
 
       // Subscribe to command topic
       mqttClient.subscribe(MQTT_TOPIC_COMMAND);
@@ -73,7 +71,7 @@ void connectMQTT() {
       mqttLogf("%s v%s online", PROP_NAME, VERSION);
 
     } else {
-      //Serial.printf("failed (rc=%d), retrying in 5s\n", mqttClient.state());
+      Serial.printf("failed (rc=%d), retrying in 5s\n", mqttClient.state());
       delay(5000);
     }
   }
@@ -336,6 +334,8 @@ void parseMessage(String msg){
     parseSensorsMessage(msg.c_str());
   else if(startingLetter == 'c')
     parseCuffsMessage(msg.c_str());
+  else if(startingLetter == 'B')
+    mqttClient.publish(MQTT_TOPIC_MESSAGE,"Beginning the game.");
   else
     parseOtherMessage(msg.c_str());
 }
@@ -372,15 +372,18 @@ void program(){
 }
 
 void _init(){
+
+  Serial.begin(115200);
+  Serial.println("Initializing peripherals.");
   //network setup
-  setup_wifi();
+  setupWiFi();
   //mqtt setup
   setupMQTT();
+  Serial.println("Completed initialization.");
 }
 
 // ***************** SETUP *********************
 void setup() {
-  Serial.begin(115200);
   _init();
 }
 

@@ -72,7 +72,7 @@ void setup() {
     }
 
     pinMode(relayPins[i], OUTPUT);
-    digitalWrite(relayPins[i], HIGH); // Lock all cuffs initially
+    digitalWrite(relayPins[i], LOW); // Lock all cuffs initially
 
     cuffs[i].engaged = false;
     cuffs[i].touched = false;
@@ -90,17 +90,10 @@ void setup() {
   Serial.println("\n=== SYSTEM READY ===");
   Serial.println("Monitoring for state changes...");
   Serial.println("Type 'help' for available commands\n");
-}
 
-void printSensorsStatus(){
-  //cuffs status
-  for(int i = 0; i < 8; i++)
-    Serial3.println("c" + String(i) + ":" + ((lastCuffStates[i]) ? "c":"o"));
-  //touchsensors status
-  for(int i = 0; i < 8; i++)
-    Serial3.println("s" + String(i) + ":" + ((lastTouchStates[i]) ? "t":"nt"));
-}
+  beginGame();
 
+}
 
 // ==================== MAIN LOOP ====================
 void loop() {
@@ -210,6 +203,33 @@ void loop() {
     handleSerialCommand();
   }
 }
+
+void printSensorsStatus(){
+  //cuffs status
+  for(int i = 0; i < 8; i++)
+    Serial3.println("c" + String(i) + ":" + ((lastCuffStates[i]) ? "c":"o"));
+  //touchsensors status
+  for(int i = 0; i < 8; i++)
+    Serial3.println("s" + String(i) + ":" + ((lastTouchStates[i]) ? "t":"nt"));
+}
+
+bool checkForAnyClosedCuff(){ 
+  for(int i = 0; i < 8; i++)
+    if(!digitalRead(hallPins[i]))
+      return true;
+  return false;
+}
+
+void beginGame(){
+  //game starts when any cuff is closed
+    while(!checkForAnyClosedCuff()); 
+  //once a closed cuff is detected, lock all the cuffs
+  for(int i = 0; i < 8; i++)
+    digitalWrite(relayPins[i],HIGH);
+  Serial.println("Beginning the game.");
+  Serial3.println("Begin");
+}
+
 
 // ==================== PUZZLE LOGIC ====================
 void releaseCuffs() {
