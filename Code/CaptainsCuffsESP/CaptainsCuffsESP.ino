@@ -8,6 +8,7 @@
 
 #define MQTT_TOPIC_COMMAND  "MermaidsTale/CaptainsCuffs/command"
 #define MQTT_TOPIC_STATUS   "MermaidsTale/CaptainsCuffs/status"
+#define MQTT_TOPIC_SOLVED   "MermaidsTale/CaptainsCuffs/solved"
 #define MQTT_TOPIC_LOG      "MermaidsTale/CaptainsCuffs/log"
 #define MQTT_TOPIC_MESSAGE  "MermaidsTale/CaptainsCuffs/message"
 #define MQTT_TOPIC_SYSTEM   "MermaidsTale/CaptainsCuffs/system"
@@ -68,6 +69,7 @@ void connectMQTT() {
 
       // Announce we're online
       mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
+      mqttClient.publish(MQTT_TOPIC_SOLVED, puzzleSolved ? "true" : "false", true);
       mqttLogf("%s v%s online", PROP_NAME, VERSION);
 
     } else {
@@ -129,6 +131,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(msg, "PUZZLE_RESET") == 0) {
     puzzleSolved = false;
     mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttClient.publish(MQTT_TOPIC_SOLVED, "false", true);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "OK");
     //Serial.println("[MQTT] PUZZLE_RESET -> OK");
     return;
@@ -136,6 +139,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(msg, "SOLVE") == 0) {
     puzzleSolved = true;
     mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttClient.publish(MQTT_TOPIC_SOLVED, "true", true);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "SOLVED");
     return;
   }
@@ -322,6 +326,9 @@ void parseOtherMessage(const char* msg) {
   }
 
   bool solved = strcmp(state, "s") == 0;
+  puzzleSolved = solved;
+
+  mqttClient.publish(MQTT_TOPIC_SOLVED, solved ? "true" : "false", true);
 
   String out = "Puzzle: ";
   out+= (solved) ? "Solved" : "Not Solved";

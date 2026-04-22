@@ -266,6 +266,7 @@ void resetPuzzle() {
 
   puzzleSolved = false;
   Serial.println("Ready for next players\n");
+  Serial3.println("p:ns");
 
   // publishStatus(); // MQTT disabled
   // mqtt.publish("cuffs/status", "reset"); // MQTT disabled
