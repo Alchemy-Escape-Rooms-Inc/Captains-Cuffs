@@ -265,6 +265,7 @@ void resetPuzzle() {
   }
 
   puzzleSolved = false;
+  lastSolutionCheck = false;
   Serial.println("Ready for next players\n");
   Serial3.println("p:ns");
 
@@ -308,6 +309,8 @@ void closeAllCuffs() {
   for (int i = 0; i < numCuffs; i++)
     closeCuff(i);
   puzzleSolved = false;
+  lastSolutionCheck = false;
+  Serial3.println("p:ns");
   Serial.println("All cuffs closed\n");
   // publishStatus(); // MQTT disabled
   // mqtt.publish("cuffs/status", "all_locked"); // MQTT disabled

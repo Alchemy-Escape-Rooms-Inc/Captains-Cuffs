@@ -1,7 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "CaptainsCuffs"
@@ -108,20 +108,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   if(strcmp(msg,"PING") == 0){
-    mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    // NOTE: never publish back to MQTT_TOPIC_COMMAND from this callback --
+    // the board subscribes to it, so the broker echoes it back = infinite loop.
+    mqttLogf("Command received: %s", msg);
     mqttClient.publish(MQTT_TOPIC_MESSAGE,"PONG");
     //Serial.println("[MQTT] PING -> PONG");
     return;
   }
   if(strcmp(msg,"STATUS") == 0){
     const char* state = puzzleSolved ? "SOLVED" : "READY";
-    mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttLogf("Command received: %s", msg);
     mqttClient.publish(MQTT_TOPIC_MESSAGE,state);
     //Serial.printf("[MQTT] STATUS -> %s\n",state);
     return;
   }
   if(strcmp(msg,"RESET") == 0){
-    mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttLogf("Command received: %s", msg);
     mqttClient.publish(MQTT_TOPIC_MESSAGE,"OK");
     //Serial.println("[MQTT] RESET -> Rebooting...");
     delay(100);
@@ -130,7 +132,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
   if (strcmp(msg, "PUZZLE_RESET") == 0) {
     puzzleSolved = false;
-    mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttLogf("Command received: %s", msg);
     mqttClient.publish(MQTT_TOPIC_SOLVED, "false", true);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "OK");
     //Serial.println("[MQTT] PUZZLE_RESET -> OK");
@@ -138,14 +140,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
   if (strcmp(msg, "SOLVE") == 0) {
     puzzleSolved = true;
-    mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttLogf("Command received: %s", msg);
     mqttClient.publish(MQTT_TOPIC_SOLVED, "true", true);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "SOLVED");
     return;
   }
 
   if (strcmp(msg, "displayStatus") == 0) {
-    mqttClient.publish(MQTT_TOPIC_COMMAND,msg);
+    mqttLogf("Command received: %s", msg);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "Printing Status.");
     Serial.println("displayStatus");
     return;
