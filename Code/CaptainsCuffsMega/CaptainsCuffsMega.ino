@@ -12,7 +12,7 @@ Hardware:
 */
 
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 
 // ==================== CONFIGURATION ====================
@@ -105,8 +105,9 @@ void loop() {
     return;
   }
 
-  // Skip puzzle logic if already solved
-  if (puzzleSolved) return;
+  // NOTE: sensors are scanned even after a solve — guests opening their
+  // cuffs post-solve must still be reported, or MQTT shows them locked.
+  // Only the win-check below is skipped while puzzleSolved.
 
   int activeCuffs = 0;
   int activeTouches = 0;
@@ -176,22 +177,24 @@ void loop() {
     }
   }
 
-  // Check solution (only print when status changes)
-  bool currentSolutionStatus = (activeCuffs > 0 && activeTouches == activeCuffs);
+  // Check solution (only while unsolved; only print when status changes)
+  if (!puzzleSolved) {
+    bool currentSolutionStatus = (activeCuffs > 0 && activeTouches == activeCuffs);
 
-  if (currentSolutionStatus && !lastSolutionCheck) {
-    Serial.print("SOLUTION: ");
-    Serial.print(activeTouches);
-    Serial.print("/");
-    Serial.print(activeCuffs);
-    Serial.println(" - SOLVING PUZZLE!");
-    releaseCuffs();
-    stateChanged = true;
-    //MQTT stuff
-    Serial3.println(String("p:") + String(((puzzleSolved) ? "s":"ns")));
+    if (currentSolutionStatus && !lastSolutionCheck) {
+      Serial.print("SOLUTION: ");
+      Serial.print(activeTouches);
+      Serial.print("/");
+      Serial.print(activeCuffs);
+      Serial.println(" - SOLVING PUZZLE!");
+      releaseCuffs();
+      stateChanged = true;
+      //MQTT stuff
+      Serial3.println(String("p:") + String(((puzzleSolved) ? "s":"ns")));
+    }
+
+    lastSolutionCheck = currentSolutionStatus;
   }
-
-  lastSolutionCheck = currentSolutionStatus;
 
   // Publish status on any state change (disabled)
   // if (stateChanged) {

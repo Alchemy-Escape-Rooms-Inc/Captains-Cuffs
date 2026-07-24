@@ -1,7 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.1.0"
+#define VERSION "1.2.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "CaptainsCuffs"
@@ -12,6 +12,10 @@
 #define MQTT_TOPIC_LOG      "MermaidsTale/CaptainsCuffs/log"
 #define MQTT_TOPIC_MESSAGE  "MermaidsTale/CaptainsCuffs/message"
 #define MQTT_TOPIC_SYSTEM   "MermaidsTale/CaptainsCuffs/system"
+// Game-start announcement: the retained-state sweeper erases all saved
+// cuff states around game start/end, so on GameStart we ask the Mega for
+// a full status dump (16 msgs, once per game) to repopulate them.
+#define MQTT_TOPIC_GAMESTART "MermaidsTale/GameStart"
 
 //************ GLOBAL VARIABLES **********
 WiFiClient espClient;
@@ -66,11 +70,16 @@ void connectMQTT() {
 
       // Subscribe to command topic
       mqttClient.subscribe(MQTT_TOPIC_COMMAND);
+      mqttClient.subscribe(MQTT_TOPIC_GAMESTART);
 
       // Announce we're online
       mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
       mqttClient.publish(MQTT_TOPIC_SOLVED, puzzleSolved ? "true" : "false", true);
       mqttLogf("%s v%s online", PROP_NAME, VERSION);
+
+      // Any (re)connect may have missed sensor changes while offline —
+      // request a full status dump from the Mega to re-sync MQTT state.
+      loadedStatus = false;
 
     } else {
       Serial.printf("failed (rc=%d), retrying in 5s\n", mqttClient.state());
@@ -96,12 +105,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   while(*msg == ' ' || *msg == '\r' || *msg == '\n')
     msg++;
   char * end = msg + strlen(msg) -1;
-  while(end > msg && (*end == ' ' || *end == 't' || *end == '\r' || *end == '\n')){
+  while(end > msg && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')){
     *end = '\0';
     end--;
   }
 
   //Serial.printf("[MQTT] Received on %s: %s\n", topicBuf,msg);
+
+  if(strcmp(topicBuf,MQTT_TOPIC_GAMESTART) == 0){
+    // Sweeper wipes retained cuff states at game start — repopulate them.
+    // Read-only re-sync: safe even if a retained GameStart replays at boot.
+    Serial.println("displayStatus");
+    return;
+  }
 
   if(strcmp(topicBuf,MQTT_TOPIC_COMMAND) != 0){
     return;
@@ -299,7 +315,7 @@ void parseSensorsMessage(const char* msg) {
 
   bool triggered = strcmp(state, "t") == 0;
   String out = triggered ? "Triggered" : "Not Triggered";
-  mqttClient.publish(topic.c_str(),out.c_str());
+  mqttClient.publish(topic.c_str(),out.c_str(),true);  // retained: broker keeps latest state
 }
 
 
@@ -316,7 +332,7 @@ void parseCuffsMessage(const char* msg) {
 
   bool closed = strcmp(state, "c") == 0;
   String out = closed ? "Closed" : "Opened";
-  mqttClient.publish(topic.c_str(),out.c_str());
+  mqttClient.publish(topic.c_str(),out.c_str(),true);  // retained: broker keeps latest state
 }
 
 void parseOtherMessage(const char* msg) {
@@ -343,7 +359,7 @@ void parseMessage(String msg){
     parseSensorsMessage(msg.c_str());
   else if(startingLetter == 'c')
     parseCuffsMessage(msg.c_str());
-  else if(startingLetter == 'B')
+  else if(startingLetter == 'b')  // was 'B', but startingLetter is tolower()'d — never matched
     mqttClient.publish(MQTT_TOPIC_MESSAGE,"Beginning the game.");
   else
     parseOtherMessage(msg.c_str());
