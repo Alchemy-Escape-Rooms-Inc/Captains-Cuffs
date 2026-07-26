@@ -12,11 +12,21 @@ Hardware:
 */
 
 
-#define VERSION "1.1.0"
+#define VERSION "1.2.0"
 
 
 // ==================== CONFIGURATION ====================
 const int numCuffs = 8;
+
+// Cuffs 3, 4, 7 (MQTT topics Cuff3/Cuff4/Cuff7) are out of service — greyed
+// out on the UI. Only cuffs 0, 1, 2, 5, 6 are active. A disabled cuff never
+// counts toward the solve, never starts the game, and its relay is never
+// energized. Set an entry to false to re-enable that cuff.
+const bool disabledCuffs[numCuffs] = {false, false, false, true, true, false, false, true};
+
+bool cuffDisabled(int i) {
+  return disabledCuffs[i];
+}
 const int touchPins[numCuffs] = {22, 23, 24, 25, 26, 27, 28, 29};
 const int hallPins[numCuffs] = {30, 31, 32, 33, 34, 35, 36, 37};
 const int relayPins[numCuffs] = {38, 39, 40, 41, 42, 43, 44, 45};
@@ -115,10 +125,9 @@ void loop() {
 
   // Read all sensors and detect changes
   for (int i = 0; i < numCuffs; i++) {
-    // Skip disabled cuffs 3 and 5
-    //if (i == 3 || i == 5) {
-    //  continue;
-    //}
+    if (cuffDisabled(i)) {
+      continue;
+    }
 
     // Skip disabled hall sensors
     bool magnetDetected = (hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW) : false;
@@ -216,19 +225,20 @@ void printSensorsStatus(){
     Serial3.println("s" + String(i) + ":" + ((lastTouchStates[i]) ? "t":"nt"));
 }
 
-bool checkForAnyClosedCuff(){ 
+bool checkForAnyClosedCuff(){
   for(int i = 0; i < 8; i++)
-    if(!digitalRead(hallPins[i]))
+    if(!cuffDisabled(i) && !digitalRead(hallPins[i]))
       return true;
   return false;
 }
 
 void beginGame(){
   //game starts when any cuff is closed
-    while(!checkForAnyClosedCuff()); 
+    while(!checkForAnyClosedCuff());
   //once a closed cuff is detected, lock all the cuffs
   for(int i = 0; i < 8; i++)
-    digitalWrite(relayPins[i],HIGH);
+    if(!cuffDisabled(i))
+      digitalWrite(relayPins[i],HIGH);
   Serial.println("Beginning the game.");
   Serial3.println("Begin");
 }
@@ -263,6 +273,7 @@ void resetPuzzle() {
   Serial.println("\n=== RESETTING PUZZLE ===");
 
   for (int i = 0; i < numCuffs; i++) {
+    if (cuffDisabled(i)) continue;
     digitalWrite(relayPins[i], HIGH);
     cuffs[i].released = false;
   }
@@ -298,6 +309,12 @@ void openAllCuffs() {
 
 
 void closeCuff(byte index){
+  if (cuffDisabled(index)) {
+    Serial.print("Cuff ");
+    Serial.print(index);
+    Serial.println(" is DISABLED - not locking");
+    return;
+  }
   digitalWrite(relayPins[index], HIGH);
   cuffs[index].released = false;
   Serial.print("Cuff ");
@@ -346,11 +363,10 @@ void printDetailedStatus() {
     Serial.print(i);
     Serial.print("  |   ");
 
-    // Disable cuffs 3 and 5
-    //if (i == 3 || i == 5) {
-    //  Serial.println("DISABLED   |   DISABLED    |   DISABLED");
-    //  continue;
-    //}
+    if (cuffDisabled(i)) {
+      Serial.println("DISABLED   |   DISABLED    |   DISABLED");
+      continue;
+    }
 
     Serial.print(isLocked ? "LOCKED   " : "UNLOCKED ");
     Serial.print(" |   ");
@@ -471,6 +487,13 @@ void testAllRelays() {
   Serial.println("\n=== TESTING RELAYS ===");
 
   for (int i = 0; i < numCuffs; i++) {
+    if (cuffDisabled(i)) {
+      Serial.print("Cuff ");
+      Serial.print(i);
+      Serial.println(": DISABLED - skipped");
+      continue;
+    }
+
     Serial.print("Cuff ");
     Serial.print(i);
     Serial.print(": ");
@@ -495,6 +518,8 @@ void testAllTouchSensors() {
 
   unsigned long startTime = millis();
   bool sensorTested[numCuffs] = {false};
+  for (int i = 0; i < numCuffs; i++)
+    if (cuffDisabled(i)) sensorTested[i] = true; // don't wait on disabled cuffs
 
   while (millis() - startTime < 30000) {
     for (int i = 0; i < numCuffs; i++) {
@@ -545,7 +570,7 @@ void testAllHallSensors() {
     Serial.print("  ");
     Serial.print(i);
     Serial.print("  |   ");
-    Serial.println((hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW ? "Y" : "N") : "DISABLED");
+    Serial.println((!cuffDisabled(i) && hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW ? "Y" : "N") : "DISABLED");
   }
 
   Serial.println("\nMonitoring for changes (15s)...");
@@ -559,7 +584,7 @@ void testAllHallSensors() {
 
   while (millis() - startTime < 15000) {
     for (int i = 0; i < numCuffs; i++) {
-      if (hallPins[i] == -1) continue; // Skip disabled pins
+      if (cuffDisabled(i) || hallPins[i] == -1) continue; // Skip disabled pins
 
       bool currentState = digitalRead(hallPins[i]) == LOW;
       if (currentState != lastStates[i]) {
