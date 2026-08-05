@@ -2,17 +2,22 @@
    Alchemy Escape Room "Captain's Cuffs"
    HALL SENSOR VERSION - Arduino Mega
 
-Puzzle: All engaged cuffs must have their touch sensors activated simultaneously to release
+Puzzle: Each closed cuff independently latches (locks) itself as its hall
+sensor detects the internal magnet. The puzzle unlocks when every LATCHED
+cuff has its touch pad activated simultaneously.
 
 Hardware:
 - Touch sensors: Detect player touch (HIGH = touched)
 - Hall sensors: Detect magnet when cuff locked (LOW = magnet detected with INPUT_PULLUP)
 - Relays: Control cuff locks (HIGH = locked, LOW = released)
 
+v1.3.0: hall/touch debouncing + per-cuff independent latching. A latched
+cuff stays locked (relay HIGH) even if its hall sensor drops out mid-game;
+only puzzle solve or manual reset can unlatch it.
 */
 
 
-#define VERSION "1.2.0"
+#define VERSION "1.3.0"
 
 
 // ==================== CONFIGURATION ====================
@@ -36,405 +41,279 @@ const int espOpenPin = 50;
 const int espClosePin = 51;
 
 
-const unsigned long debounceDelay = 50;
-const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
+// A raw pin reading must be stable for this long before it becomes the
+// "stable" value the game logic sees. Filters EMI/mechanical bounce that
+// was causing false 1/1 solves when 2 cuffs were physically closed.
+const unsigned long hallDebounceDelay = 150;
+const unsigned long touchDebounceDelay = 50;
+const unsigned long autoResetDelay = 5 * 60 * 1000UL;  // 5 minutes
 
 // ==================== STATE VARIABLES ====================
-struct CuffState {
-  bool engaged;          // Hall sensor detects magnet
-  bool touched;          // Touch sensor activated
-  bool released;         // Cuff has been released
-  unsigned long lastTouchTime;
-};
+// Raw = most recent pin read. Stable = the debounced value.
+// Stable follows Raw only after (now - lastChange) > debounceDelay.
+bool hallRaw[numCuffs];
+bool hallStable[numCuffs];
+unsigned long hallLastChange[numCuffs];
 
-CuffState cuffs[numCuffs];
+bool touchRaw[numCuffs];
+bool touchStable[numCuffs];
+unsigned long touchLastChange[numCuffs];
+
+// Once a cuff's stable hall reads TRIGGERED it latches: relay goes HIGH and
+// stays HIGH. Only releaseCuffs() (solve) or resetPuzzle() clears it.
+bool cuffLatched[numCuffs];
+
 bool puzzleSolved = false;
 unsigned long puzzleSolvedTime = 0;
-
-// State tracking for change detection
-bool lastCuffStates[numCuffs];
-bool lastTouchStates[numCuffs];
 bool lastSolutionCheck = false;
+bool gameBegan = false;  // fires the "Begin" MQTT signal once per game
 
 String incoming = "";
+
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(9600);
-  Serial3.begin(115200);  //communication between the Arduino Mega and the ESP8266
-  while (!Serial) { ; }   //loop until serial communication is established with a host.
+  Serial3.begin(115200);  // link to embedded ESP8266
 
-  Serial.println("\n=== CAPTAIN'S CUFFS - HALL SENSOR VERSION ===");
+  Serial.println("\n=== CAPTAIN'S CUFFS v1.3.0 - PER-CUFF LATCHING ===");
   Serial.println("Platform: Arduino Mega");
   Serial.println("Initializing hardware...");
 
-  //Initialize esp pins and state
-  pinMode(espResetPin,INPUT_PULLUP);
-  pinMode(espOpenPin,INPUT_PULLUP);
-  pinMode(espClosePin,INPUT_PULLUP);
+  pinMode(espResetPin, INPUT_PULLUP);
+  pinMode(espOpenPin, INPUT_PULLUP);
+  pinMode(espClosePin, INPUT_PULLUP);
 
-  // Initialize pins and state
   for (int i = 0; i < numCuffs; i++) {
     pinMode(touchPins[i], INPUT);
-
-    // Skip disabled hall sensor pins
-    if (hallPins[i] != -1) {
-      pinMode(hallPins[i], INPUT_PULLUP); // Pull-up to prevent floating pins
-    }
-
+    pinMode(hallPins[i], INPUT_PULLUP);
     pinMode(relayPins[i], OUTPUT);
-    digitalWrite(relayPins[i], LOW); // Lock all cuffs initially
+    digitalWrite(relayPins[i], LOW);  // all cuffs start UNLOCKED
 
-    cuffs[i].engaged = false;
-    cuffs[i].touched = false;
-    cuffs[i].released = false;
-    cuffs[i].lastTouchTime = 0;
-
-    lastCuffStates[i] = false;
-    lastTouchStates[i] = false;
+    hallRaw[i] = false;
+    hallStable[i] = false;
+    hallLastChange[i] = 0;
+    touchRaw[i] = false;
+    touchStable[i] = false;
+    touchLastChange[i] = 0;
+    cuffLatched[i] = false;
   }
 
-  // Allow pull-up resistors to stabilize
   Serial.println("Stabilizing sensors...");
   delay(100);
 
   Serial.println("\n=== SYSTEM READY ===");
-  Serial.println("Monitoring for state changes...");
+  Serial.println("Waiting for players to close cuffs...");
   Serial.println("Type 'help' for available commands\n");
-
-  beginGame();
-
 }
 
 // ==================== MAIN LOOP ====================
 void loop() {
-
   receiveESPCommand();
-  // Handle auto-reset after puzzle solved
+
   if (puzzleSolved && (millis() - puzzleSolvedTime >= autoResetDelay)) {
     resetPuzzle();
     return;
   }
 
-  // NOTE: sensors are scanned even after a solve — guests opening their
-  // cuffs post-solve must still be reported, or MQTT shows them locked.
-  // Only the win-check below is skipped while puzzleSolved.
+  unsigned long now = millis();
+  int latchedCount = 0;
+  int touchedLatchedCount = 0;
 
-  int activeCuffs = 0;
-  int activeTouches = 0;
-  bool stateChanged = false;
-
-  // Read all sensors and detect changes
   for (int i = 0; i < numCuffs; i++) {
-    if (cuffDisabled(i)) {
-      continue;
+    if (cuffDisabled(i)) continue;
+
+    // ---- Debounce hall ----
+    bool rawH = (digitalRead(hallPins[i]) == LOW);
+    if (rawH != hallRaw[i]) {
+      hallRaw[i] = rawH;
+      hallLastChange[i] = now;
+    }
+    if (hallRaw[i] != hallStable[i] && (now - hallLastChange[i] >= hallDebounceDelay)) {
+      hallStable[i] = hallRaw[i];
+      onHallStateChanged(i, hallStable[i]);
     }
 
-    // Skip disabled hall sensors
-    bool magnetDetected = (hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW) : false;
-    bool currentTouch = digitalRead(touchPins[i]) == HIGH;
-
-    cuffs[i].engaged = magnetDetected;
-    cuffs[i].touched = currentTouch;
-
-    // Print only on state changes
-    if (magnetDetected != lastCuffStates[i]) {
-      Serial.print("Cuff ");
-      Serial.print(i);
-      Serial.print("     Relay ");
-      Serial.print(digitalRead(relayPins[i]) == HIGH ? "ON      " : "OFF     ");
-      Serial.print("   Hall Sensor ");
-      Serial.print(magnetDetected ? "TRIGGERED        " : "NOT TRIGGERED    ");
-      Serial.print("   Touch Sensor ");
-      Serial.print(currentTouch ? "ACTIVE        " : "NOT ACTIVE    ");
-      Serial.print("   Cuffs ");
-      Serial.println(digitalRead(relayPins[i]) == HIGH ? "LOCKED" : "UNLOCKED");
-      lastCuffStates[i] = magnetDetected;
-      stateChanged = true;
-
-      //MQTT stuff
-      Serial3.println("c" + String(i) + ":" + ((magnetDetected) ? "c":"o"));
-
+    // ---- Debounce touch ----
+    bool rawT = (digitalRead(touchPins[i]) == HIGH);
+    if (rawT != touchRaw[i]) {
+      touchRaw[i] = rawT;
+      touchLastChange[i] = now;
+    }
+    if (touchRaw[i] != touchStable[i] && (now - touchLastChange[i] >= touchDebounceDelay)) {
+      touchStable[i] = touchRaw[i];
+      onTouchStateChanged(i, touchStable[i]);
     }
 
-    if (currentTouch != lastTouchStates[i]) {
-      Serial.print("Cuff ");
-      Serial.print(i);
-      Serial.print("     Relay ");
-      Serial.print(digitalRead(relayPins[i]) == HIGH ? "ON      " : "OFF     ");
-      Serial.print("   Hall Sensor ");
-      Serial.print(magnetDetected ? "TRIGGERED        " : "NOT TRIGGERED    ");
-      Serial.print("   Touch Sensor ");
-      Serial.print(currentTouch ? "ACTIVE        " : "NOT ACTIVE    ");
-      Serial.print("   Cuffs ");
-      Serial.println(digitalRead(relayPins[i]) == HIGH ? "LOCKED" : "UNLOCKED");
-      lastTouchStates[i] = currentTouch;
-      stateChanged = true;
-
-      //MQTT stuff
-      Serial3.println("s" + String(i) + ":" + ((currentTouch) ? "t":"nt"));
+    // ---- Latch: stable hall TRIGGERED locks this cuff, once ----
+    if (hallStable[i] && !cuffLatched[i] && !puzzleSolved) {
+      cuffLatched[i] = true;
+      digitalWrite(relayPins[i], HIGH);
+      Serial.print("Cuff "); Serial.print(i); Serial.println(" LATCHED (locked)");
+      if (!gameBegan) {
+        gameBegan = true;
+        Serial3.println("Begin");
+        Serial.println("=== GAME STARTED (first cuff latched) ===");
+      }
     }
 
-    // Count active components
-    if (magnetDetected) {
-      activeCuffs++;
-
-      // Handle touch with debouncing
-      if (currentTouch && (millis() - cuffs[i].lastTouchTime > debounceDelay)) {
-        activeTouches++;
-        cuffs[i].lastTouchTime = millis();
+    // ---- Count for solve check: only LATCHED cuffs count ----
+    if (cuffLatched[i]) {
+      latchedCount++;
+      if (touchStable[i]) {
+        touchedLatchedCount++;
       }
     }
   }
 
-  // Check solution (only while unsolved; only print when status changes)
+  // ---- Solve check ----
   if (!puzzleSolved) {
-    bool currentSolutionStatus = (activeCuffs > 0 && activeTouches == activeCuffs);
-
+    bool currentSolutionStatus = (latchedCount > 0 && touchedLatchedCount == latchedCount);
     if (currentSolutionStatus && !lastSolutionCheck) {
       Serial.print("SOLUTION: ");
-      Serial.print(activeTouches);
+      Serial.print(touchedLatchedCount);
       Serial.print("/");
-      Serial.print(activeCuffs);
+      Serial.print(latchedCount);
       Serial.println(" - SOLVING PUZZLE!");
       releaseCuffs();
-      stateChanged = true;
-      //MQTT stuff
-      Serial3.println(String("p:") + String(((puzzleSolved) ? "s":"ns")));
+      Serial3.println("p:s");
     }
-
     lastSolutionCheck = currentSolutionStatus;
   }
 
-  // Publish status on any state change (disabled)
-  // if (stateChanged) {
-  //   publishStatus();
-  // }
-
-  // Handle serial commands
   if (Serial.available()) {
     handleSerialCommand();
   }
 }
 
-void printSensorsStatus(){
-  //cuffs status
-  for(int i = 0; i < 8; i++)
-    Serial3.println("c" + String(i) + ":" + ((lastCuffStates[i]) ? "c":"o"));
-  //touchsensors status
-  for(int i = 0; i < 8; i++)
-    Serial3.println("s" + String(i) + ":" + ((lastTouchStates[i]) ? "t":"nt"));
+void onHallStateChanged(int i, bool triggered) {
+  Serial.print("Cuff "); Serial.print(i);
+  Serial.print("  Hall "); Serial.print(triggered ? "TRIGGERED" : "RELEASED");
+  Serial.print("  Latched: "); Serial.print(cuffLatched[i] ? "YES" : "no");
+  Serial.print("  Touch: "); Serial.println(touchStable[i] ? "ACTIVE" : "off");
+  Serial3.println("c" + String(i) + ":" + (triggered ? "c" : "o"));
 }
 
-bool checkForAnyClosedCuff(){
-  for(int i = 0; i < 8; i++)
-    if(!cuffDisabled(i) && !digitalRead(hallPins[i]))
+void onTouchStateChanged(int i, bool active) {
+  Serial.print("Cuff "); Serial.print(i);
+  Serial.print("  Touch "); Serial.print(active ? "ACTIVE" : "off");
+  Serial.print("  Latched: "); Serial.print(cuffLatched[i] ? "YES" : "no");
+  Serial.print("  Hall: "); Serial.println(hallStable[i] ? "TRIGGERED" : "released");
+  Serial3.println("s" + String(i) + ":" + (active ? "t" : "nt"));
+}
+
+bool checkForAnyClosedCuff() {
+  for (int i = 0; i < numCuffs; i++)
+    if (!cuffDisabled(i) && !digitalRead(hallPins[i]))
       return true;
   return false;
-}
-
-void beginGame(){
-  //game starts when any cuff is closed
-    while(!checkForAnyClosedCuff());
-  //once a closed cuff is detected, lock all the cuffs
-  for(int i = 0; i < 8; i++)
-    if(!cuffDisabled(i))
-      digitalWrite(relayPins[i],HIGH);
-  Serial.println("Beginning the game.");
-  Serial3.println("Begin");
 }
 
 
 // ==================== PUZZLE LOGIC ====================
 void releaseCuffs() {
   Serial.println("\n=== RELEASING CUFFS ===");
-
   for (int i = 0; i < numCuffs; i++) {
-    if (cuffs[i].engaged) {
+    if (cuffLatched[i]) {
       digitalWrite(relayPins[i], LOW);
-      cuffs[i].released = true;
-      Serial.print("Cuff ");
-      Serial.print(i);
-      Serial.println(" RELEASED");
+      cuffLatched[i] = false;
+      Serial.print("Cuff "); Serial.print(i); Serial.println(" RELEASED");
     }
   }
-
   puzzleSolved = true;
   puzzleSolvedTime = millis();
-
   Serial.println("*** PUZZLE SOLVED! ***");
   Serial.print("Auto-reset in ");
   Serial.print(autoResetDelay / 1000);
   Serial.println(" seconds\n");
-
-  // mqtt.publish("cuffs/status", "solved"); // MQTT disabled
 }
 
 void resetPuzzle() {
   Serial.println("\n=== RESETTING PUZZLE ===");
-
   for (int i = 0; i < numCuffs; i++) {
     if (cuffDisabled(i)) continue;
-    digitalWrite(relayPins[i], HIGH);
-    cuffs[i].released = false;
+    digitalWrite(relayPins[i], LOW);
+    cuffLatched[i] = false;
+    hallStable[i] = false;
+    touchStable[i] = false;
   }
-
   puzzleSolved = false;
   lastSolutionCheck = false;
-  Serial.println("Ready for next players\n");
+  gameBegan = false;
+  Serial.println("Ready. Close a cuff to start the next game.\n");
   Serial3.println("p:ns");
-
-  // publishStatus(); // MQTT disabled
-  // mqtt.publish("cuffs/status", "reset"); // MQTT disabled
 }
 
 
-void openCuff(byte index){
+void openCuff(byte index) {
   digitalWrite(relayPins[index], LOW);
-  cuffs[index].released = true;
-  Serial.print("Cuff ");
-  Serial.print(index);
-  Serial.println(" opened");
+  cuffLatched[index] = false;
+  Serial.print("Cuff "); Serial.print(index); Serial.println(" opened");
 }
 
 void openAllCuffs() {
   Serial.println("\n=== OPENING ALL CUFFS ===");
-
   for (int i = 0; i < numCuffs; i++)
     openCuff(i);
-
   Serial.println("All cuffs opened\n");
-  // publishStatus(); // MQTT disabled
-  // mqtt.publish("cuffs/status", "all_released"); // MQTT disabled
 }
 
 
-void closeCuff(byte index){
+void closeCuff(byte index) {
   if (cuffDisabled(index)) {
-    Serial.print("Cuff ");
-    Serial.print(index);
-    Serial.println(" is DISABLED - not locking");
+    Serial.print("Cuff "); Serial.print(index); Serial.println(" is DISABLED - not locking");
     return;
   }
   digitalWrite(relayPins[index], HIGH);
-  cuffs[index].released = false;
-  Serial.print("Cuff ");
-  Serial.print(index);
-  Serial.println(" closed");
+  cuffLatched[index] = true;
+  Serial.print("Cuff "); Serial.print(index); Serial.println(" closed (manually latched)");
 }
 
 
 void closeAllCuffs() {
   Serial.println("\n=== CLOSING ALL CUFFS ===");
-
   for (int i = 0; i < numCuffs; i++)
     closeCuff(i);
   puzzleSolved = false;
   lastSolutionCheck = false;
   Serial3.println("p:ns");
   Serial.println("All cuffs closed\n");
-  // publishStatus(); // MQTT disabled
-  // mqtt.publish("cuffs/status", "all_locked"); // MQTT disabled
 }
+
 // ==================== STATUS DISPLAY ====================
 void printDetailedStatus() {
   Serial.println("\n=== SYSTEM STATUS ===");
-  Serial.print("Puzzle solved: ");
-  Serial.println(puzzleSolved ? "YES" : "NO");
-  Serial.print("Uptime: ");
-  Serial.print(millis() / 1000);
-  Serial.println("s");
-
+  Serial.print("Version: "); Serial.println(VERSION);
+  Serial.print("Puzzle solved: "); Serial.println(puzzleSolved ? "YES" : "NO");
+  Serial.print("Game began: "); Serial.println(gameBegan ? "YES" : "NO");
+  Serial.print("Uptime: "); Serial.print(millis() / 1000); Serial.println("s");
   if (puzzleSolved) {
     Serial.print("Reset in: ");
     Serial.print((autoResetDelay - (millis() - puzzleSolvedTime)) / 1000);
     Serial.println("s");
   }
-
   Serial.println();
-  Serial.println("CUFF | LOCK STATUS | TOUCH SENSOR | HALL SENSOR");
-  Serial.println("-----|-------------|--------------|-------------");
-
+  Serial.println("CUFF | LATCHED | HALL(stable) | TOUCH(stable) | HALL(raw)");
+  Serial.println("-----|---------|--------------|---------------|----------");
   for (int i = 0; i < numCuffs; i++) {
-    bool isLocked = digitalRead(relayPins[i]) == HIGH;
-    bool isTouched = digitalRead(touchPins[i]) == HIGH;
-    bool magnetDetected = (hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW) : false;
-
-    Serial.print("  ");
-    Serial.print(i);
-    Serial.print("  |   ");
-
     if (cuffDisabled(i)) {
-      Serial.println("DISABLED   |   DISABLED    |   DISABLED");
+      Serial.print("  "); Serial.print(i); Serial.println("  | DISABLED");
       continue;
     }
-
-    Serial.print(isLocked ? "LOCKED   " : "UNLOCKED ");
-    Serial.print(" |   ");
-    Serial.print(isTouched ? "ACTIVE      " : "NOT ACTIVE  ");
-    Serial.print(" |   ");
-    Serial.println(magnetDetected ? "CLOSED" : "OPEN  ");
+    Serial.print("  "); Serial.print(i); Serial.print("  |   ");
+    Serial.print(cuffLatched[i] ? "YES  " : "no   "); Serial.print("  |   ");
+    Serial.print(hallStable[i] ? "TRIG " : "open "); Serial.print("     |   ");
+    Serial.print(touchStable[i] ? "ACTIVE " : "off    "); Serial.print("    |   ");
+    Serial.println((digitalRead(hallPins[i]) == LOW) ? "trig" : "open");
   }
   Serial.println("===============================================\n");
 }
 
 
-
-
-
-
-
-
-
-/*
-   void publishStatus() {
-   if (!mqtt.connected()) return;
-
-// Detailed JSON status
-String status = "{";
-status += "\"solved\":" + String(puzzleSolved ? "true" : "false");
-status += ",\"cuffs\":[";
-
-for (int i = 0; i < numCuffs; i++) {
-if (i > 0) status += ",";
-status += "{\"id\":" + String(i);
-status += ",\"engaged\":" + String(cuffs[i].engaged ? "true" : "false");
-status += ",\"touched\":" + String(cuffs[i].touched ? "true" : "false");
-status += ",\"released\":" + String(cuffs[i].released ? "true" : "false");
-status += "}";
-}
-
-status += "]}";
-mqtt.publish("cuffs/status", status.c_str());
-
-// Clean human-readable lock status
-String lockStatus = "Cuffs: ";
-for (int i = 0; i < numCuffs; i++) {
-bool isLocked = digitalRead(relayPins[i]) == HIGH;
-lockStatus += String(i) + "=";
-lockStatus += isLocked ? "LOCKED" : "UNLOCKED";
-if (i < numCuffs - 1) lockStatus += ", ";
-}
-mqtt.publish("cuffs/locks", lockStatus.c_str());
-
-// Summary counts
-int lockedCount = 0;
-int engagedCount = 0;
-for (int i = 0; i < numCuffs; i++) {
-if (digitalRead(relayPins[i]) == HIGH) lockedCount++;
-if (cuffs[i].engaged) engagedCount++;
-}
-
-String summary = "Locked: " + String(lockedCount) + "/" + String(numCuffs) +
-" | Engaged: " + String(engagedCount) + "/" + String(numCuffs) +
-" | Status: " + String(puzzleSolved ? "SOLVED" : "ACTIVE");
-mqtt.publish("cuffs/summary", summary.c_str());
-}
-*/
 // ==================== ESP COMMANDS ==================
-void receiveESPCommand(){
-  while(Serial3.available()){
+void receiveESPCommand() {
+  while (Serial3.available()) {
     char c = Serial3.read();
-    if(c == '\n') {
+    if (c == '\n') {
       incoming.trim();
       handleESPCommand(incoming);
       incoming = "";
@@ -444,15 +323,23 @@ void receiveESPCommand(){
   }
 }
 
-void sendCommand(String cmd){
+void sendCommand(String cmd) {
   Serial3.println(cmd);
 }
 
-void handleESPCommand(String cmd){
-  if(strcmp(cmd.c_str(),"displayStatus") == 0){
+void handleESPCommand(String cmd) {
+  if (strcmp(cmd.c_str(), "displayStatus") == 0) {
     printSensorsStatus();
   }
 }
+
+void printSensorsStatus() {
+  for (int i = 0; i < 8; i++)
+    Serial3.println("c" + String(i) + ":" + ((hallStable[i]) ? "c" : "o"));
+  for (int i = 0; i < 8; i++)
+    Serial3.println("s" + String(i) + ":" + ((touchStable[i]) ? "t" : "nt"));
+}
+
 // ==================== SERIAL COMMANDS ====================
 void handleSerialCommand() {
   String command = Serial.readStringUntil('\n');
@@ -461,11 +348,9 @@ void handleSerialCommand() {
 
   if (command == "status") {
     printDetailedStatus();
-    // publishStatus(); // MQTT disabled
   } else if (command == "reset") {
     resetPuzzle();
-  }
-  else if (command == "open all" || command == "openall") {
+  } else if (command == "open all" || command == "openall") {
     openAllCuffs();
   } else if (command == "close all" || command == "closeall") {
     closeAllCuffs();
@@ -480,33 +365,23 @@ void handleSerialCommand() {
   } else if (command == "help") {
     printHelp();
   }
-
 }
 
 void testAllRelays() {
   Serial.println("\n=== TESTING RELAYS ===");
-
   for (int i = 0; i < numCuffs; i++) {
     if (cuffDisabled(i)) {
-      Serial.print("Cuff ");
-      Serial.print(i);
-      Serial.println(": DISABLED - skipped");
+      Serial.print("Cuff "); Serial.print(i); Serial.println(": DISABLED - skipped");
       continue;
     }
-
-    Serial.print("Cuff ");
-    Serial.print(i);
-    Serial.print(": ");
-
+    Serial.print("Cuff "); Serial.print(i); Serial.print(": ");
     digitalWrite(relayPins[i], LOW);
     Serial.print("OPEN ");
     delay(1000);
-
     digitalWrite(relayPins[i], HIGH);
     Serial.println("CLOSE");
     delay(500);
   }
-
   Serial.println("Relay test complete\n");
 }
 
@@ -519,44 +394,32 @@ void testAllTouchSensors() {
   unsigned long startTime = millis();
   bool sensorTested[numCuffs] = {false};
   for (int i = 0; i < numCuffs; i++)
-    if (cuffDisabled(i)) sensorTested[i] = true; // don't wait on disabled cuffs
+    if (cuffDisabled(i)) sensorTested[i] = true;
 
   while (millis() - startTime < 30000) {
     for (int i = 0; i < numCuffs; i++) {
       bool touched = digitalRead(touchPins[i]) == HIGH;
       if (touched && !sensorTested[i]) {
-        Serial.print("  ");
-        Serial.print(i);
-        Serial.println("  | WORKING");
+        Serial.print("  "); Serial.print(i); Serial.println("  | WORKING");
         sensorTested[i] = true;
       }
     }
-
     bool allTested = true;
     for (int i = 0; i < numCuffs; i++) {
-      if (!sensorTested[i]) {
-        allTested = false;
-        break;
-      }
+      if (!sensorTested[i]) { allTested = false; break; }
     }
-
     if (allTested) {
       Serial.println("\nAll sensors tested successfully!");
       return;
     }
-
     delay(100);
   }
-
   Serial.println("\nNot tested:");
   for (int i = 0; i < numCuffs; i++) {
     if (!sensorTested[i]) {
-      Serial.print("  ");
-      Serial.print(i);
-      Serial.println("  | NOT TESTED");
+      Serial.print("  "); Serial.print(i); Serial.println("  | NOT TESTED");
     }
   }
-
   Serial.println("Test complete\n");
 }
 
@@ -565,51 +428,38 @@ void testAllHallSensors() {
   Serial.println("Current status:");
   Serial.println("CUFF | MAGNET");
   Serial.println("-----|-------");
-
   for (int i = 0; i < numCuffs; i++) {
-    Serial.print("  ");
-    Serial.print(i);
-    Serial.print("  |   ");
-    Serial.println((!cuffDisabled(i) && hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW ? "Y" : "N") : "DISABLED");
+    Serial.print("  "); Serial.print(i); Serial.print("  |   ");
+    Serial.println(!cuffDisabled(i) ? (digitalRead(hallPins[i]) == LOW ? "Y" : "N") : "DISABLED");
   }
-
   Serial.println("\nMonitoring for changes (15s)...");
-
   unsigned long startTime = millis();
   bool lastStates[numCuffs];
-
   for (int i = 0; i < numCuffs; i++) {
-    lastStates[i] = (hallPins[i] != -1) ? (digitalRead(hallPins[i]) == LOW) : false;
+    lastStates[i] = (digitalRead(hallPins[i]) == LOW);
   }
-
   while (millis() - startTime < 15000) {
     for (int i = 0; i < numCuffs; i++) {
-      if (cuffDisabled(i) || hallPins[i] == -1) continue; // Skip disabled pins
-
+      if (cuffDisabled(i)) continue;
       bool currentState = digitalRead(hallPins[i]) == LOW;
       if (currentState != lastStates[i]) {
-        Serial.print("Cuff ");
-        Serial.print(i);
-        Serial.print(": ");
+        Serial.print("Cuff "); Serial.print(i); Serial.print(": ");
         Serial.println(currentState ? "MAGNET DETECTED" : "magnet removed");
         lastStates[i] = currentState;
       }
     }
     delay(50);
   }
-
   Serial.println("Test complete\n");
 }
 
 void testAllComponents() {
   Serial.println("\n=== TESTING ALL COMPONENTS ===\n");
-
   testAllHallSensors();
   delay(1000);
   testAllTouchSensors();
   delay(1000);
   testAllRelays();
-
   Serial.println("=== ALL TESTS COMPLETE ===\n");
 }
 
