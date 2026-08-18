@@ -25,9 +25,11 @@ GROOVE_RADIUS = 7.0
 GROOVE_DEPTH  = 3.5
 
 # --- retaining lip -----------------------------------------------------
+# The lip lives on the FRONT face -- the side facing into the room. The flat
+# back face is the wall side; the wall itself is the backstop on that side.
 LIP           = True    # raised rim on the FRONT face so cuffs can't slide off
-LIP_PROUD     = 8.0     # how far the rim stands above the leg/apex surface
-LIP_THICKNESS = 5.0     # how thick the rim is, front-to-back
+LIP_PROUD     = 15.0    # how far the rim stands above the leg/apex surface
+LIP_THICKNESS = 6.0     # how thick the rim is, front-to-back
 
 # --- wall mounting -----------------------------------------------------
 SCREW_HOLES   = True
