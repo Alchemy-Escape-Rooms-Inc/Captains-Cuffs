@@ -15,8 +15,8 @@ from shapely.geometry import LineString, box as shapely_box
 # ----------------------------------------------------------------------
 # PARAMS  -- assumed values, NOT measured against the built cuffs.
 # ----------------------------------------------------------------------
-HEIGHT        = 120.0   # apex height off the table / bottom of the bracket
-BASE_WIDTH    = 180.0   # foot-to-foot span -- wider stance, shallower V
+HEIGHT        = 95.0    # apex height off the table / bottom of the bracket
+BASE_WIDTH    = 220.0   # foot-to-foot span -- wide, shallow V (~49 deg legs)
 DEPTH         = 80.0    # how far the frame stands off the wall
 LEG_THICKNESS = 24.0    # how chunky each leg is
 
@@ -34,9 +34,10 @@ SCREW_HOLES   = True
 SCREW_CLEAR_D = 4.5     # through-hole: clearance for a #8 / M4 screw shank
 SCREW_HEAD_D  = 9.0     # counterbore so the head sits recessed, not proud
 BACK_WALL     = 8.0     # solid material left against the wall face
-# Heights (above the base) at which each leg gets a screw -> 4 screws total.
-# The high pair matters most: hanging weight tries to lever the top off the wall.
-SCREW_HEIGHTS = [22.0, 75.0]
+# Screw heights as a FRACTION of HEIGHT, so they stay sensible when you change
+# the proportions. Two per leg -> 4 screws. The high pair matters most: hanging
+# weight tries to lever the top of the bracket off the wall.
+SCREW_HEIGHT_FRAC = [0.22, 0.68]
 
 OUT_STL       = "handcuff_rest.stl"
 
@@ -51,35 +52,48 @@ def _cyl_along_y(radius, length, centre, sections=64):
     return c
 
 
+def _make_profile(cx0, cz_apex, t):
+    """A-frame cross-section from a centreline that passes through
+    (-cx0, 0) and the apex (0, cz_apex), overshooting below z=0 so the
+    feet trim flat. Returns (polygon, foot_point, apex_point)."""
+    foot = np.array([-cx0, 0.0])
+    apex = np.array([0.0, cz_apex])
+    down = (foot - apex) / np.linalg.norm(foot - apex)
+    foot_ext = foot + down * (4.0 * t)               # overshoot, trimmed off
+
+    line = LineString([
+        (foot_ext[0], foot_ext[1]),
+        (apex[0], apex[1]),
+        (-foot_ext[0], foot_ext[1]),
+    ])
+    # Round joins give a smooth apex crown for free -- nothing for the cuff
+    # chain to bite into.
+    poly = line.buffer(t, join_style=1, cap_style=1, resolution=48)
+    poly = poly.intersection(
+        shapely_box(-cx0 * 3 - 100, 0.0, cx0 * 3 + 100, cz_apex * 3 + 100)
+    )
+    return poly, foot_ext, apex
+
+
 def build():
     half_w = BASE_WIDTH / 2.0
     t = LEG_THICKNESS / 2.0
 
-    # Centreline of the A: base-left -> apex -> base-right. Pull the apex up
-    # and the feet in so the buffered outer envelope lands on HEIGHT/BASE_WIDTH.
-    leg_angle = np.arctan2(half_w, HEIGHT)          # from vertical
-    apex_lift = t / np.cos(leg_angle)
-    foot_out = t * np.tan(leg_angle)
+    # Solve for the centreline that makes the OUTER envelope land exactly on
+    # BASE_WIDTH x HEIGHT. A closed-form offset gets this wrong at shallow leg
+    # angles (the flat-foot trim eats into the width), so iterate instead.
+    cx0, cz_apex = half_w - t, HEIGHT - t
+    for _ in range(40):
+        profile, foot_l, apex = _make_profile(cx0, cz_apex, t)
+        xmin, zmin, xmax, zmax = profile.bounds
+        err_w = BASE_WIDTH - (xmax - xmin)
+        err_h = HEIGHT - (zmax - zmin)
+        if abs(err_w) < 1e-4 and abs(err_h) < 1e-4:
+            break
+        cx0 += err_w / 2.0
+        cz_apex += err_h
 
-    # The true centreline the profile is built from. The foot end overshoots
-    # below z=0 so the feet can be trimmed flat; screw positions MUST be
-    # interpolated along this exact line or the bores drift off-centre and
-    # break out through the side of the leg.
-    foot_l = np.array([-half_w + foot_out, -t * 2])
-    apex = np.array([0.0, HEIGHT - apex_lift])
-
-    centre_line = LineString([
-        (foot_l[0], foot_l[1]),
-        (apex[0], apex[1]),
-        (-foot_l[0], foot_l[1]),
-    ])
-
-    # Round joins give a smooth apex crown for free -- nothing for the cuff
-    # chain to bite into.
-    profile = centre_line.buffer(t, join_style=1, cap_style=1, resolution=48)
-    profile = profile.intersection(
-        shapely_box(-half_w - 10, 0.0, half_w + 10, HEIGHT + 10)
-    )
+    profile, foot_l, apex = _make_profile(cx0, cz_apex, t)
 
     solid = trimesh.creation.extrude_polygon(profile, height=DEPTH)
 
@@ -125,7 +139,7 @@ def build():
         cb_bottom = y_wall + BACK_WALL               # leave BACK_WALL solid at the wall
         cb_len = cb_top - cb_bottom
         cb_mid = (cb_top + cb_bottom) / 2.0
-        for z in SCREW_HEIGHTS:
+        for z in [HEIGHT * f for f in SCREW_HEIGHT_FRAC]:
             # Interpolate x along the real leg centreline at this height.
             frac = (z - foot_l[1]) / (apex[1] - foot_l[1])
             x_mag = abs(foot_l[0] + (apex[0] - foot_l[0]) * frac)
