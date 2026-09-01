@@ -1,0 +1,32 @@
+{
+  "frame_width": 640,
+  "frame_height": 480,
+  "_note": "Rebuilt 2026-08-31 from measured detector foot points (one live sample per skull, person standing at each). Hand-drawn original: zones.hand-drawn.bak.json. Measured landing points: S0 (277,453) S1 (322,466) S2 (329,299) S3 (437,267) S4 (417,298). Boundaries placed midway between neighboring points.",
+  "zones": [
+    {
+      "id": 0,
+      "name": "Skull0",
+      "polygon": [[235, 410], [300, 410], [300, 480], [235, 480]]
+    },
+    {
+      "id": 1,
+      "name": "Skull1",
+      "polygon": [[302, 420], [370, 420], [370, 480], [302, 480]]
+    },
+    {
+      "id": 2,
+      "name": "Skull2",
+      "polygon": [[290, 265], [372, 265], [372, 335], [290, 335]]
+    },
+    {
+      "id": 3,
+      "name": "Skull3",
+      "polygon": [[400, 235], [475, 235], [475, 282], [400, 282]]
+    },
+    {
+      "id": 4,
+      "name": "Skull4",
+      "polygon": [[375, 284], [455, 284], [455, 330], [375, 330]]
+    }
+  ]
+}

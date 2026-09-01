@@ -1,7 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.2.0"
+#define VERSION "1.3.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "CaptainsCuffs"
@@ -149,6 +149,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(msg, "PUZZLE_RESET") == 0) {
     puzzleSolved = false;
     mqttLogf("Command received: %s", msg);
+    Serial.println("puzzleReset");            // -> Mega: relock relays
     mqttClient.publish(MQTT_TOPIC_SOLVED, "false", true);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "OK");
     //Serial.println("[MQTT] PUZZLE_RESET -> OK");
@@ -157,8 +158,32 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(msg, "SOLVE") == 0) {
     puzzleSolved = true;
     mqttLogf("Command received: %s", msg);
+    Serial.println("skullSolve");             // -> Mega: actually release
     mqttClient.publish(MQTT_TOPIC_SOLVED, "true", true);
     mqttClient.publish(MQTT_TOPIC_MESSAGE, "SOLVED");
+    return;
+  }
+  if (strcmp(msg, "SKULLS_SOLVED") == 0) {
+    // Published by SkullVision when every skull zone is held at once.
+    puzzleSolved = true;
+    mqttLogf("Vision: skulls solved");
+    Serial.println("skullSolve");             // -> Mega over serial
+    mqttClient.publish(MQTT_TOPIC_SOLVED, "true", true);
+    mqttClient.publish(MQTT_TOPIC_MESSAGE, "SOLVED");
+    return;
+  }
+  if (strcmp(msg, "GAME_START") == 0) {
+    puzzleSolved = false;
+    mqttLogf("Vision: game start");
+    Serial.println("beginGame");              // -> Mega over serial
+    mqttClient.publish(MQTT_TOPIC_SOLVED, "false", true);
+    return;
+  }
+  if (strcmp(msg, "OPEN_ALL") == 0) {
+    // GM manual override: drop every relay regardless of game state.
+    mqttLogf("Command received: %s", msg);
+    Serial.println("openAll");                // -> Mega over serial
+    mqttClient.publish(MQTT_TOPIC_MESSAGE, "OK");
     return;
   }
 

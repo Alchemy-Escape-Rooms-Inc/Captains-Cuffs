@@ -1,0 +1,8 @@
+# Camera and broker credentials live here. Never commit.
+config.json
+
+zones.json
+*.log
+*.pt
+__pycache__/
+*.pyc

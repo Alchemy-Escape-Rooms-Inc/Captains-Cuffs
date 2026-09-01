@@ -12,7 +12,7 @@ Hardware:
 */
 
 
-#define VERSION "1.2.0"
+#define VERSION "1.3.0"
 
 
 // ==================== CONFIGURATION ====================
@@ -101,8 +101,9 @@ void setup() {
   Serial.println("Monitoring for state changes...");
   Serial.println("Type 'help' for available commands\n");
 
-  beginGame();
-
+  // beginGame() is no longer called here. With the hall sensors removed it
+  // blocked forever waiting for a closed cuff and the board never reached
+  // loop(). The game now starts on command (MQTT GAME_START via the ESP).
 }
 
 // ==================== MAIN LOOP ====================
@@ -232,13 +233,16 @@ bool checkForAnyClosedCuff(){
   return false;
 }
 
+// Game start no longer comes from a magnet. It comes from the GM / room
+// controller over MQTT (GAME_START -> ESP -> "beginGame" over serial).
+bool gameRunning = false;
+
 void beginGame(){
-  //game starts when any cuff is closed
-    while(!checkForAnyClosedCuff());
-  //once a closed cuff is detected, lock all the cuffs
-  for(int i = 0; i < 8; i++)
+  if (gameRunning) return;
+  for(int i = 0; i < numCuffs; i++)
     if(!cuffDisabled(i))
-      digitalWrite(relayPins[i],HIGH);
+      digitalWrite(relayPins[i], HIGH);
+  gameRunning = true;
   Serial.println("Beginning the game.");
   Serial3.println("Begin");
 }
@@ -280,6 +284,7 @@ void resetPuzzle() {
 
   puzzleSolved = false;
   lastSolutionCheck = false;
+  gameRunning = false;   // allow the next GAME_START to run beginGame again
   Serial.println("Ready for next players\n");
   Serial3.println("p:ns");
 
@@ -449,9 +454,38 @@ void sendCommand(String cmd){
 }
 
 void handleESPCommand(String cmd){
-  if(strcmp(cmd.c_str(),"displayStatus") == 0){
+  if(cmd == "displayStatus"){
     printSensorsStatus();
   }
+  else if(cmd == "beginGame"){
+    beginGame();
+  }
+  else if(cmd == "skullSolve"){
+    solveFromVision();
+  }
+  else if(cmd == "puzzleReset"){
+    resetPuzzle();
+  }
+  else if(cmd == "openAll"){
+    openAllCuffs();
+  }
+}
+
+// Solve triggered by SkullVision (or the GM's manual SOLVE) arriving over
+// MQTT -> ESP -> serial. releaseCuffs() only drops relays where a hall
+// sensor saw a magnet; with the hall sensors removed that is never, so the
+// vision solve needs its own release that ignores 'engaged'.
+void solveFromVision(){
+  Serial.println("\n=== SOLVE FROM VISION ===");
+  for (int i = 0; i < numCuffs; i++) {
+    if (cuffDisabled(i)) continue;
+    digitalWrite(relayPins[i], LOW);
+    cuffs[i].released = true;
+  }
+  puzzleSolved = true;
+  puzzleSolvedTime = millis();
+  Serial3.println("p:s");
+  Serial.println("*** PUZZLE SOLVED (vision) ***");
 }
 // ==================== SERIAL COMMANDS ====================
 void handleSerialCommand() {

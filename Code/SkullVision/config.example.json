@@ -1,0 +1,57 @@
+{
+  "_comment": "Copy to config.json and fill in. config.json is gitignored - never commit credentials.",
+
+  "camera": {
+    "_comment": "Reolink RTSP. Sub stream is 640x360-ish and plenty for this. Main stream only if sub is too soft.",
+    "rtsp_url": "rtsp://USERNAME:PASSWORD@10.1.10.XXX:554/h264Preview_01_sub",
+    "reconnect_delay_s": 3.0,
+    "read_timeout_s": 10.0
+  },
+
+  "mqtt": {
+    "host": "10.1.10.115",
+    "port": 1883,
+    "username": null,
+    "password": null,
+    "client_id": "SkullVision",
+    "base_topic": "MermaidsTale/CaptainsCuffs",
+    "_comment": "Publishes: <base>/system/Skull<N> (retained), <base>/vision/status (LWT), <base>/vision/summary, <base>/command"
+  },
+
+  "detector": {
+    "_comment": "yolov8n.pt is the fast one. yolov8s.pt if the room is dark and n misses people. Downloads on first run - do that BEFORE game day, it needs internet.",
+    "model": "yolov8n.pt",
+    "device": "cpu",
+    "confidence": 0.35,
+    "imgsz": 640,
+    "target_fps": 8
+  },
+
+  "puzzle": {
+    "_comment": "enabled_skulls: which zone ids count. min_people: guard against a solve when the room is empty and the model hallucinates.",
+    "enabled_skulls": [0, 1, 2, 3, 4],
+    "min_people": 2,
+    "require_distinct_person_per_skull": true,
+
+    "_comment_hysteresis": "Frames a zone must be continuously occupied before it latches ON, and continuously empty before it latches OFF. At 8fps, 6/12 = 0.75s on, 1.5s off. Longer OFF than ON so a momentary miss does not drop a skull mid-solve.",
+    "occupy_frames": 6,
+    "release_frames": 12,
+
+    "_comment_solve": "hold_frames: all skulls must stay occupied this many consecutive frames before SOLVE fires. Stops a fluke single-frame alignment from solving the puzzle.",
+    "hold_frames": 16,
+    "solve_cooldown_s": 300.0
+  },
+
+  "zones": {
+    "_comment": "Written by calibrate_zones.py. Do not hand-edit unless you know the frame size.",
+    "file": "zones.json"
+  },
+
+  "runtime": {
+    "dry_run": false,
+    "_comment_dry_run": "true = detect and log but never publish SOLVE. Use this for every test until you trust it.",
+    "preview": false,
+    "_comment_preview": "true = open a window with boxes and zones drawn. Needs a display. Turn OFF for unattended running.",
+    "log_file": "skullvision.log"
+  }
+}

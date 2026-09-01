@@ -1,0 +1,6 @@
+## Arduino IDE/CLI build output
+Code/CaptainsCuffsESP/build/
+Code/CaptainsCuffsMega/build/
+
+# Stale git lock files parked for deletion
+_to_delete/
