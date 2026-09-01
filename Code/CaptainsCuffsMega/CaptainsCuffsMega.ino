@@ -47,9 +47,9 @@ const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
 const int numZones = 5;
 // Which touch sensor lives in which skull: SkullVision zone id -> index into
 // touchPins[]. Cuffs 3, 4, 7 are out of service, so the five skulls map to
-// touch sensors 0, 1, 2, 6, 5. Bench-verified 2026-09-01: Skull3 fires
-// sensor 6 and Skull4 fires sensor 5 (reverse of the wiring guess).
-const int zoneTouchIdx[numZones] = {0, 1, 2, 6, 5};
+// touch sensors 0, 1, 2, 5, 6. VERIFY ON THE BENCH: touch each skull, watch
+// which TouchSensorN fires on MQTT, and fix this table if the order differs.
+const int zoneTouchIdx[numZones] = {0, 1, 2, 5, 6};
 bool zoneOccupied[numZones] = {false, false, false, false, false};
 
 // ==================== STATE VARIABLES ====================
