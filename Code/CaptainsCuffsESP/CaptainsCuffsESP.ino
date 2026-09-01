@@ -1,7 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.3.0"
+#define VERSION "1.4.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "CaptainsCuffs"
@@ -16,6 +16,11 @@
 // cuff states around game start/end, so on GameStart we ask the Mega for
 // a full status dump (16 msgs, once per game) to repopulate them.
 #define MQTT_TOPIC_GAMESTART "MermaidsTale/GameStart"
+// SkullVision publishes per-zone occupancy here (retained). We forward each
+// change to the Mega, which requires the touch sensors of exactly the
+// OCCUPIED skulls to be touched simultaneously to solve.
+#define MQTT_TOPIC_SKULL_PREFIX "MermaidsTale/CaptainsCuffs/system/Skull"
+#define NUM_SKULL_ZONES 5
 
 //************ GLOBAL VARIABLES **********
 WiFiClient espClient;
@@ -72,6 +77,13 @@ void connectMQTT() {
       mqttClient.subscribe(MQTT_TOPIC_COMMAND);
       mqttClient.subscribe(MQTT_TOPIC_GAMESTART);
 
+      // SkullVision occupancy (retained, so a reconnect replays current state)
+      for (int i = 0; i < NUM_SKULL_ZONES; i++) {
+        char t[64];
+        snprintf(t, sizeof(t), "%s%d", MQTT_TOPIC_SKULL_PREFIX, i);
+        mqttClient.subscribe(t);
+      }
+
       // Announce we're online
       mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
       mqttClient.publish(MQTT_TOPIC_SOLVED, puzzleSolved ? "true" : "false", true);
@@ -111,6 +123,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   //Serial.printf("[MQTT] Received on %s: %s\n", topicBuf,msg);
+
+  if(strncmp(topicBuf, MQTT_TOPIC_SKULL_PREFIX, strlen(MQTT_TOPIC_SKULL_PREFIX)) == 0){
+    // Occupancy from SkullVision. The retained-state sweeper clears these
+    // topics with an EMPTY payload around game start — that is a wipe, not a
+    // state change, so ignore it (live changes keep the Mega in sync).
+    if(msg[0] == '\0')
+      return;
+    int zone = atoi(topicBuf + strlen(MQTT_TOPIC_SKULL_PREFIX));
+    if(zone < 0 || zone >= NUM_SKULL_ZONES)
+      return;
+    bool occupied = (strcmp(msg, "Occupied") == 0);
+    Serial.print("z");
+    Serial.print(zone);
+    Serial.println(occupied ? ":o" : ":e");   // -> Mega over serial
+    return;
+  }
 
   if(strcmp(topicBuf,MQTT_TOPIC_GAMESTART) == 0){
     // Sweeper wipes retained cuff states at game start — repopulate them.

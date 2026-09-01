@@ -48,8 +48,8 @@
   },
 
   "runtime": {
-    "dry_run": false,
-    "_comment_dry_run": "true = detect and log but never publish SOLVE. Use this for every test until you trust it.",
+    "dry_run": true,
+    "_comment_dry_run": "KEEP true. Since firmware v1.4.0 the Mega owns the solve (occupied skulls' touch sensors); SkullVision only reports occupancy. false would let standing alone solve the puzzle, bypassing the touch sensors.",
     "preview": false,
     "_comment_preview": "true = open a window with boxes and zones drawn. Needs a display. Turn OFF for unattended running.",
     "log_file": "skullvision.log"

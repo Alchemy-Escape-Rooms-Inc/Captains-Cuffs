@@ -12,7 +12,7 @@ Hardware:
 */
 
 
-#define VERSION "1.3.0"
+#define VERSION "1.4.0"
 
 
 // ==================== CONFIGURATION ====================
@@ -38,6 +38,19 @@ const int espClosePin = 51;
 
 const unsigned long debounceDelay = 50;
 const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
+
+// ==================== SKULL ZONES (SkullVision) ====================
+// SkullVision watches the camera and reports which skulls have a person
+// standing at them (ESP forwards "z<N>:o"/"z<N>:e" over serial). The solve
+// requires the touch sensors of exactly the OCCUPIED skulls to be active
+// simultaneously — skulls with nobody standing at them are not required.
+const int numZones = 5;
+// Which touch sensor lives in which skull: SkullVision zone id -> index into
+// touchPins[]. Cuffs 3, 4, 7 are out of service, so the five skulls map to
+// touch sensors 0, 1, 2, 5, 6. VERIFY ON THE BENCH: touch each skull, watch
+// which TouchSensorN fires on MQTT, and fix this table if the order differs.
+const int zoneTouchIdx[numZones] = {0, 1, 2, 5, 6};
+bool zoneOccupied[numZones] = {false, false, false, false, false};
 
 // ==================== STATE VARIABLES ====================
 struct CuffState {
@@ -187,20 +200,29 @@ void loop() {
     }
   }
 
-  // Check solution (only while unsolved; only print when status changes)
+  // Check solution (only while unsolved; only print when status changes).
+  // A skull counts only while SkullVision sees a person standing at it; every
+  // occupied skull's touch sensor must be active at the same moment. Nobody
+  // standing at any skull = nothing to solve.
   if (!puzzleSolved) {
-    bool currentSolutionStatus = (activeCuffs > 0 && activeTouches == activeCuffs);
+    int occupiedZones = 0;
+    int touchedOccupied = 0;
+    for (int z = 0; z < numZones; z++) {
+      if (!zoneOccupied[z]) continue;
+      occupiedZones++;
+      int t = zoneTouchIdx[z];
+      if (!cuffDisabled(t) && cuffs[t].touched) touchedOccupied++;
+    }
+    bool currentSolutionStatus = (occupiedZones > 0 && touchedOccupied == occupiedZones);
 
     if (currentSolutionStatus && !lastSolutionCheck) {
       Serial.print("SOLUTION: ");
-      Serial.print(activeTouches);
+      Serial.print(touchedOccupied);
       Serial.print("/");
-      Serial.print(activeCuffs);
-      Serial.println(" - SOLVING PUZZLE!");
-      releaseCuffs();
+      Serial.print(occupiedZones);
+      Serial.println(" occupied skulls touched - SOLVING PUZZLE!");
+      solveFromVision();   // releases relays, sets puzzleSolved, sends p:s
       stateChanged = true;
-      //MQTT stuff
-      Serial3.println(String("p:") + String(((puzzleSolved) ? "s":"ns")));
     }
 
     lastSolutionCheck = currentSolutionStatus;
@@ -454,7 +476,19 @@ void sendCommand(String cmd){
 }
 
 void handleESPCommand(String cmd){
-  if(cmd == "displayStatus"){
+  if(cmd.length() >= 4 && cmd.charAt(0) == 'z' && cmd.indexOf(':') > 1){
+    // Zone occupancy from SkullVision via ESP: "z<N>:o" / "z<N>:e"
+    int sep = cmd.indexOf(':');
+    int zone = cmd.substring(1, sep).toInt();
+    char state = cmd.charAt(sep + 1);
+    if(zone >= 0 && zone < numZones){
+      zoneOccupied[zone] = (state == 'o');
+      Serial.print("Zone ");
+      Serial.print(zone);
+      Serial.println(zoneOccupied[zone] ? " OCCUPIED" : " empty");
+    }
+  }
+  else if(cmd == "displayStatus"){
     printSensorsStatus();
   }
   else if(cmd == "beginGame"){
