@@ -25,10 +25,17 @@ its own - the Mega still owns the relays. Keep the GM manual override working.
 import argparse
 import json
 import logging
+import os
 import signal
 import sys
 import time
 from typing import List, Optional, Tuple
+
+# Force RTSP over TCP. Over UDP, corrupt packets from the Reolink can crash
+# ffmpeg inside OpenCV and take the whole process down with it (exit 255, no
+# traceback) - seen twice in production, both right after a stream stall.
+# Must be set before cv2 is first imported anywhere.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
 import config_loader
 import zone_logic
