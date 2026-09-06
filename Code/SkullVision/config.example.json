@@ -39,7 +39,11 @@
 
     "_comment_solve": "hold_frames: all skulls must stay occupied this many consecutive frames before SOLVE fires. Stops a fluke single-frame alignment from solving the puzzle.",
     "hold_frames": 16,
-    "solve_cooldown_s": 300.0
+    "solve_cooldown_s": 300.0,
+
+    "_comment_people": "people_frames: the head-count must hold steady this many consecutive frames before it is published to system/People (12 @ 8fps = 1.5s). This number is the Mega's solve target (touched skulls == people), so phantom flickers must not move it. republish_s: how often the retained People + Skull topics are re-sent so a wiped broker or a rebooted ESP catches up.",
+    "people_frames": 12,
+    "republish_s": 60.0
   },
 
   "zones": {
@@ -49,7 +53,7 @@
 
   "runtime": {
     "dry_run": true,
-    "_comment_dry_run": "KEEP true. Since firmware v1.4.0 the Mega owns the solve (occupied skulls' touch sensors); SkullVision only reports occupancy. false would let standing alone solve the puzzle, bypassing the touch sensors.",
+    "_comment_dry_run": "KEEP true. Since firmware v1.5.0 the Mega owns the solve (number of touched skulls == system/People head-count); SkullVision only reports the head-count and occupancy. false would let standing alone solve the puzzle, bypassing the touch sensors.",
     "preview": false,
     "_comment_preview": "true = open a window with boxes and zones drawn. Needs a display. Turn OFF for unattended running.",
     "log_file": "skullvision.log"

@@ -4,8 +4,10 @@ skullvision.py - Alchemy Escape Rooms / Mermaid's Tale
 Camera-driven replacement for the Captain's Cuffs hall-sensor input.
 
 Watches the Reolink feed, counts people, works out which skull each one is
-standing at, and reports occupancy over MQTT. When every enabled skull is
-held simultaneously it publishes the solve command.
+standing at, and reports the head-count + occupancy over MQTT. Since firmware
+v1.5.0 the Mega solves when the number of touched skulls equals the head-count
+published on system/People (any skulls). The legacy "all skulls held" solve
+command below stays behind dry_run and should never be armed.
 
     python skullvision.py                 # normal run (honours dry_run in config)
     python skullvision.py --dry-run       # detect and log, never publish SOLVE
@@ -13,6 +15,7 @@ held simultaneously it publishes the solve command.
     python skullvision.py --selftest      # no camera, no MQTT - logic check only
 
 Published topics (base = MermaidsTale/CaptainsCuffs):
+    <base>/system/People     "0".."9" debounced head-count   retained  <- solve target
     <base>/system/Skull<N>   "Occupied" | "Empty"      retained
     <base>/vision/status     "ONLINE" | "OFFLINE"      retained, OFFLINE is the LWT
     <base>/vision/summary    JSON snapshot every state change
@@ -312,6 +315,20 @@ def selftest():
     assert r.occupancy[1], "a single dropped frame must not release a zone"
     print("  single dropped frame did not release the zone")
 
+    print("head-count debounce (solve target):")
+    pc = zone_logic.PeopleCounter(stable_frames=3)
+    for _ in range(5):
+        pc.update(2)
+    assert pc.count == 2, "steady count of 2 must latch"
+    pc.update(3); pc.update(3)          # two-frame phantom
+    assert pc.count == 2, "a two-frame phantom must not move the count"
+    pc.update(2)
+    assert pc.count == 2
+    for _ in range(3):
+        pc.update(1)
+    assert pc.count == 1, "a count held for stable_frames must latch"
+    print(f"  phantom ignored, real change latched -> count={pc.count}")
+
     print("\nAll logic checks passed.")
 
 
@@ -386,8 +403,21 @@ def main():
         min_people=int(pz.get("min_people", 1)),
     )
 
-    for z in zones:
-        mqtt_pub.publish(f"system/{z.name}", "Empty", retain=True)
+    people = zone_logic.PeopleCounter(stable_frames=int(pz.get("people_frames", 12)))
+    republish_s = float(pz.get("republish_s", 60.0))
+    puzzle_occupancy = {}
+
+    def publish_retained_state():
+        # Everything the Mega needs to solve, re-sent so a wiped broker
+        # (retained sweeper / broker reboot) or a rebooted ESP catches up.
+        mqtt_pub.publish("system/People", str(people.count), retain=True)
+        for z in zones:
+            mqtt_pub.publish(f"system/{z.name}",
+                             "Occupied" if puzzle_occupancy.get(z.id) else "Empty",
+                             retain=True)
+
+    publish_retained_state()
+    last_republish = time.time()
 
     target_fps = float(cfg["detector"].get("target_fps", 8)) or 8.0
     frame_budget = 1.0 / target_fps
@@ -395,7 +425,8 @@ def main():
     last_solve_at: Optional[float] = None
     last_summary = None
 
-    log.info("Watching %d zones, enabled: %s", len(zones), puzzle.enabled)
+    log.info("Watching %d zones, enabled: %s; head-count latches after %d stable frames",
+             len(zones), puzzle.enabled, people.stable_frames)
 
     while _running:
         loop_start = time.time()
@@ -413,14 +444,26 @@ def main():
             continue
 
         result = puzzle.update(boxes)
+        puzzle_occupancy = result.occupancy
 
         for zid, now_on in result.changed.items():
             name = next(z.name for z in zones if z.id == zid)
             log.info("%s -> %s", name, "OCCUPIED" if now_on else "EMPTY")
             mqtt_pub.publish(f"system/{name}", "Occupied" if now_on else "Empty", retain=True)
 
+        before = people.count
+        if people.update(result.people_count) != before:
+            log.info("People -> %d (solve target: %d skull%s touched)",
+                     people.count, people.count, "" if people.count == 1 else "s")
+            mqtt_pub.publish("system/People", str(people.count), retain=True)
+
+        if (time.time() - last_republish) >= republish_s:
+            publish_retained_state()
+            last_republish = time.time()
+
         summary = {
             "people": result.people_count,
+            "players": people.count,
             "occupied": [z.name for z in zones if result.occupancy.get(z.id)],
             "all": result.all_occupied,
             "solved": puzzle.solved,
@@ -439,8 +482,8 @@ def main():
             log.info("Cooldown elapsed - resetting for the next group.")
             puzzle.reset()
             last_solve_at = None
-            for z in zones:
-                mqtt_pub.publish(f"system/{z.name}", "Empty", retain=True)
+            puzzle_occupancy = {}
+            publish_retained_state()
 
         if preview:
             cv2.imshow("SkullVision", draw_preview(cv2, frame, zones,

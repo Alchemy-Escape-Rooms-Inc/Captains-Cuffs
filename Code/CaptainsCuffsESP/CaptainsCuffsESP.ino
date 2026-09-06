@@ -1,7 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.4.0"
+#define VERSION "1.5.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "CaptainsCuffs"
@@ -16,11 +16,14 @@
 // cuff states around game start/end, so on GameStart we ask the Mega for
 // a full status dump (16 msgs, once per game) to repopulate them.
 #define MQTT_TOPIC_GAMESTART "MermaidsTale/GameStart"
-// SkullVision publishes per-zone occupancy here (retained). We forward each
-// change to the Mega, which requires the touch sensors of exactly the
-// OCCUPIED skulls to be touched simultaneously to solve.
+// SkullVision publishes per-zone occupancy here (retained). Forwarded to the
+// Mega for logging/status only since v1.5.0 - it no longer decides the solve.
 #define MQTT_TOPIC_SKULL_PREFIX "MermaidsTale/CaptainsCuffs/system/Skull"
 #define NUM_SKULL_ZONES 5
+// SkullVision's debounced head-count (retained, "0".."9"). Forwarded to the
+// Mega as "n<N>". v1.5.0 solve rule: the number of touched skulls must equal
+// this head-count - WHICH skulls are touched does not matter.
+#define MQTT_TOPIC_PEOPLE "MermaidsTale/CaptainsCuffs/system/People"
 
 //************ GLOBAL VARIABLES **********
 WiFiClient espClient;
@@ -83,6 +86,8 @@ void connectMQTT() {
         snprintf(t, sizeof(t), "%s%d", MQTT_TOPIC_SKULL_PREFIX, i);
         mqttClient.subscribe(t);
       }
+      // SkullVision head-count = the solve target (retained)
+      mqttClient.subscribe(MQTT_TOPIC_PEOPLE);
 
       // Announce we're online
       mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
@@ -123,6 +128,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   //Serial.printf("[MQTT] Received on %s: %s\n", topicBuf,msg);
+
+  if(strcmp(topicBuf, MQTT_TOPIC_PEOPLE) == 0){
+    // Head-count from SkullVision. Same sweeper caveat as the skull topics:
+    // an empty payload is a wipe, not "zero people" - ignore it.
+    if(msg[0] == '\0')
+      return;
+    if(msg[0] < '0' || msg[0] > '9')
+      return;
+    int n = atoi(msg);
+    if(n < 0 || n > 9)
+      return;
+    Serial.print("n");
+    Serial.println(n);                        // -> Mega over serial: "n<N>"
+    return;
+  }
 
   if(strncmp(topicBuf, MQTT_TOPIC_SKULL_PREFIX, strlen(MQTT_TOPIC_SKULL_PREFIX)) == 0){
     // Occupancy from SkullVision. The retained-state sweeper clears these

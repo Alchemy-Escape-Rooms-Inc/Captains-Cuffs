@@ -2,7 +2,10 @@
    Alchemy Escape Room "Captain's Cuffs"
    HALL SENSOR VERSION - Arduino Mega
 
-Puzzle: All engaged cuffs must have their touch sensors activated simultaneously to release
+Puzzle (v1.5.0): the number of skull touch sensors held at the same moment
+must EQUAL the number of players SkullVision counts in the room. Which skulls
+are touched does not matter. Head-count arrives as "n<N>" over serial from the
+ESP (MQTT MermaidsTale/CaptainsCuffs/system/People, published by SkullVision).
 
 Hardware:
 - Touch sensors: Detect player touch (HIGH = touched)
@@ -12,7 +15,7 @@ Hardware:
 */
 
 
-#define VERSION "1.4.0"
+#define VERSION "1.5.0"
 
 
 // ==================== CONFIGURATION ====================
@@ -40,17 +43,23 @@ const unsigned long debounceDelay = 50;
 const unsigned long autoResetDelay = 5 * 60 * 1000UL; // 5 minutes
 
 // ==================== SKULL ZONES (SkullVision) ====================
-// SkullVision watches the camera and reports which skulls have a person
-// standing at them (ESP forwards "z<N>:o"/"z<N>:e" over serial). The solve
-// requires the touch sensors of exactly the OCCUPIED skulls to be active
-// simultaneously — skulls with nobody standing at them are not required.
+// SkullVision watches the camera and reports (a) how many people are in the
+// room and (b) which skulls have a person standing at them. The ESP forwards
+// both over serial: "n<N>" = head-count, "z<N>:o"/"z<N>:e" = zone occupancy.
+//
+// SOLVE RULE (v1.5.0): count of touch sensors active at the same moment ==
+// playerCount. ANY skulls - the zone occupancy is kept only for the serial
+// log / status dump, it no longer gates the solve.
 const int numZones = 5;
 // Which touch sensor lives in which skull: SkullVision zone id -> index into
 // touchPins[]. Cuffs 3, 4, 7 are out of service, so the five skulls map to
-// touch sensors 0, 1, 2, 5, 6. VERIFY ON THE BENCH: touch each skull, watch
-// which TouchSensorN fires on MQTT, and fix this table if the order differs.
+// touch sensors 0, 1, 2, 5, 6. Bench-confirmed 2026-09-01.
 const int zoneTouchIdx[numZones] = {0, 1, 2, 5, 6};
 bool zoneOccupied[numZones] = {false, false, false, false, false};
+// Players in the room per SkullVision (debounced there). 0 = unknown / empty
+// room = nothing to solve. Not cleared by PUZZLE_RESET - it is live camera
+// state, and SkullVision re-sends it every minute anyway.
+int playerCount = 0;
 
 // ==================== STATE VARIABLES ====================
 struct CuffState {
@@ -201,26 +210,24 @@ void loop() {
   }
 
   // Check solution (only while unsolved; only print when status changes).
-  // A skull counts only while SkullVision sees a person standing at it; every
-  // occupied skull's touch sensor must be active at the same moment. Nobody
-  // standing at any skull = nothing to solve.
+  // Solve = the number of skull touch sensors held right now equals the
+  // number of players SkullVision counts. Any skulls. More touches than
+  // players does NOT solve (two hands on two skulls with one player = no).
+  // playerCount 0 = camera sees nobody / has not reported = nothing to solve.
   if (!puzzleSolved) {
-    int occupiedZones = 0;
-    int touchedOccupied = 0;
+    int touchedSkulls = 0;
     for (int z = 0; z < numZones; z++) {
-      if (!zoneOccupied[z]) continue;
-      occupiedZones++;
       int t = zoneTouchIdx[z];
-      if (!cuffDisabled(t) && cuffs[t].touched) touchedOccupied++;
+      if (!cuffDisabled(t) && cuffs[t].touched) touchedSkulls++;
     }
-    bool currentSolutionStatus = (occupiedZones > 0 && touchedOccupied == occupiedZones);
+    bool currentSolutionStatus = (playerCount > 0 && touchedSkulls == playerCount);
 
     if (currentSolutionStatus && !lastSolutionCheck) {
       Serial.print("SOLUTION: ");
-      Serial.print(touchedOccupied);
-      Serial.print("/");
-      Serial.print(occupiedZones);
-      Serial.println(" occupied skulls touched - SOLVING PUZZLE!");
+      Serial.print(touchedSkulls);
+      Serial.print(" skulls touched for ");
+      Serial.print(playerCount);
+      Serial.println(" players - SOLVING PUZZLE!");
       solveFromVision();   // releases relays, sets puzzleSolved, sends p:s
       stateChanged = true;
     }
@@ -367,6 +374,9 @@ void printDetailedStatus() {
   Serial.println("\n=== SYSTEM STATUS ===");
   Serial.print("Puzzle solved: ");
   Serial.println(puzzleSolved ? "YES" : "NO");
+  Serial.print("Players (SkullVision): ");
+  Serial.print(playerCount);
+  Serial.println(" -> solve = that many skulls touched at once");
   Serial.print("Uptime: ");
   Serial.print(millis() / 1000);
   Serial.println("s");
@@ -476,7 +486,17 @@ void sendCommand(String cmd){
 }
 
 void handleESPCommand(String cmd){
-  if(cmd.length() >= 4 && cmd.charAt(0) == 'z' && cmd.indexOf(':') > 1){
+  if(cmd.length() >= 2 && cmd.charAt(0) == 'n' && isDigit(cmd.charAt(1))){
+    // Head-count from SkullVision via ESP: "n<N>" = solve target
+    int n = cmd.substring(1).toInt();
+    if(n >= 0 && n <= 9 && n != playerCount){
+      playerCount = n;
+      Serial.print("Players: ");
+      Serial.print(playerCount);
+      Serial.println(" (solve = that many skulls touched at once)");
+    }
+  }
+  else if(cmd.length() >= 4 && cmd.charAt(0) == 'z' && cmd.indexOf(':') > 1){
     // Zone occupancy from SkullVision via ESP: "z<N>:o" / "z<N>:e"
     int sep = cmd.indexOf(':');
     int zone = cmd.substring(1, sep).toInt();

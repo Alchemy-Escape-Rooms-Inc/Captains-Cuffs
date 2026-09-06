@@ -71,6 +71,39 @@ class ZoneTracker:
 
 
 @dataclass
+class PeopleCounter:
+    """Hysteresis for the head-count. The detector occasionally flickers a
+    phantom person (2 seen with 1 present) for a frame or two; the Mega uses
+    this number as the solve target, so it must only move once the camera has
+    agreed on the new count for `stable_frames` consecutive frames."""
+    stable_frames: int
+    count: int = 0
+    _candidate: int = 0
+    _streak: int = 0
+
+    def update(self, raw: int) -> int:
+        """Feed one frame's raw person count, get the debounced count back."""
+        if raw == self.count:
+            self._candidate = raw
+            self._streak = 0
+            return self.count
+        if raw == self._candidate:
+            self._streak += 1
+        else:
+            self._candidate = raw
+            self._streak = 1
+        if self._streak >= self.stable_frames:
+            self.count = raw
+            self._streak = 0
+        return self.count
+
+    def reset(self):
+        self.count = 0
+        self._candidate = 0
+        self._streak = 0
+
+
+@dataclass
 class PuzzleResult:
     occupancy: Dict[int, bool]
     changed: Dict[int, bool]

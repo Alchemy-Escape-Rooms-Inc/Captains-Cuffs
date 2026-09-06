@@ -1,3 +1,8 @@
+> **2026-09-06 — v1.5.0 shipped.** Solve rule is now *count of touched skulls
+> == SkullVision head-count* (`system/People`, ESP forwards `n<N>` to the Mega).
+> Any skulls. Zone occupancy (`Skull<N>`) is status-only. Everything below is
+> the historical patch history for v1.3/v1.4.
+
 # Firmware changes needed for SkullVision
 
 **I did not edit your .ino files.** These are the changes to make. Read them,

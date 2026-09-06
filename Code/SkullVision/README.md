@@ -3,9 +3,12 @@
 Camera-driven input for the Captain's Cuffs puzzle in Mermaid's Tale, replacing
 the hall sensors that came out with the physical handcuffs.
 
-Watches the Reolink feed, detects people, works out which skull each person is
-standing at, publishes per-skull occupancy over MQTT, and fires the solve when
-every enabled skull is held at once.
+Watches the Reolink feed, detects people, publishes the debounced head-count
+(`system/People`) and per-skull occupancy over MQTT. **Solve rule since
+firmware v1.5.0 (2026-09-06):** the Mega releases when the number of skull
+touch sensors held at the same moment equals `system/People`. Which skulls
+does not matter; more touches than players does not solve. `dry_run` stays
+true — the legacy "all skulls held" solve command must never be armed.
 
 ---
 
@@ -125,7 +128,8 @@ Base: `MermaidsTale/CaptainsCuffs`
 
 | Topic | Payload | Retained |
 |---|---|---|
-| `system/Skull<N>` | `Occupied` / `Empty` | yes |
+| `system/People` | `0`..`9` debounced head-count = **the solve target** (Mega v1.5.0: touched skulls == this number, any skulls) | yes, re-sent every `republish_s` |
+| `system/Skull<N>` | `Occupied` / `Empty` (status only since v1.5.0) | yes |
 | `vision/status` | `ONLINE` / `OFFLINE` | yes (OFFLINE is the LWT) |
 | `vision/summary` | JSON: people count, occupied list, solved | no |
 | `command` | `SKULLS_SOLVED` | no |
