@@ -41,8 +41,9 @@
     "hold_frames": 16,
     "solve_cooldown_s": 300.0,
 
-    "_comment_people": "people_frames: the head-count must hold steady this many consecutive frames before it is published to system/People (12 @ 8fps = 1.5s). This number is the Mega's solve target (touched skulls == people), so phantom flickers must not move it. republish_s: how often the retained People + Skull topics are re-sent so a wiped broker or a rebooted ESP catches up.",
-    "people_frames": 12,
+    "_comment_people": "Head-count published to system/People = the Mega's solve target (touched skulls == people). The overhead camera flickers 0/1/2 with one person leaning over a skull, so: a count is CONFIRMED once the camera has seen at least that many people for people_up_frames consecutive frames (4 @ 8fps = 0.5s; a 1-2 frame phantom cannot raise it), and it is HELD for people_hold_s seconds after the last confirming run (dropouts cannot lower it). It is never below the number of occupied skull zones. republish_s: how often the retained People + Skull topics are re-sent so a wiped broker or a rebooted ESP catches up.",
+    "people_up_frames": 4,
+    "people_hold_s": 10.0,
     "republish_s": 60.0
   },
 

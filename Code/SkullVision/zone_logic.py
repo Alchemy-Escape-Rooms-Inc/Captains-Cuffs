@@ -5,6 +5,7 @@ Kept separate on purpose so it can be tested on a laptop with fake detections
 before it ever runs on the room PC. See test_logic.py.
 """
 
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -72,35 +73,70 @@ class ZoneTracker:
 
 @dataclass
 class PeopleCounter:
-    """Hysteresis for the head-count. The detector occasionally flickers a
-    phantom person (2 seen with 1 present) for a frame or two; the Mega uses
-    this number as the solve target, so it must only move once the camera has
-    agreed on the new count for `stable_frames` consecutive frames."""
-    stable_frames: int
-    count: int = 0
-    _candidate: int = 0
-    _streak: int = 0
+    """Robust head-count for the Mega's solve target (touched skulls == people).
 
-    def update(self, raw: int) -> int:
-        """Feed one frame's raw person count, get the debounced count back."""
-        if raw == self.count:
-            self._candidate = raw
-            self._streak = 0
-            return self.count
-        if raw == self._candidate:
-            self._streak += 1
-        else:
-            self._candidate = raw
-            self._streak = 1
-        if self._streak >= self.stable_frames:
-            self.count = raw
-            self._streak = 0
+    The overhead fisheye is a poor view of a person leaning over a skull at
+    the frame edge: with ONE person present the raw YOLO count flips
+    0/1/2 several times a second (09-13 wire log: ~45% of frames "0", ~50%
+    "1", ~5% "2"). A symmetric "N identical frames in a row" debounce never
+    latched, so the head-count sat at 0 and nothing could solve.
+
+    Rule: a count of v is CONFIRMED when the camera saw >= v people for
+    `up_frames` consecutive frames; it stays believed for `hold_s` seconds
+    after the last such run. The published count is the largest confirmed
+    value still inside its hold window. So a dropped frame (or a whole
+    second of dropped frames) cannot pull the count down, and a phantom
+    that lasts 1-2 frames cannot push it up. `floor` (number of debounced
+    occupied skull zones) is a hard minimum: an occupied zone IS a person.
+    """
+    up_frames: int = 4
+    hold_s: float = 10.0
+    max_people: int = 9
+    count: int = 0
+    _streak: List[int] = field(default_factory=list)
+    _confirmed_at: List[Optional[float]] = field(default_factory=list)
+
+    def __post_init__(self):
+        self._streak = [0] * (self.max_people + 1)
+        self._confirmed_at = [None] * (self.max_people + 1)
+
+    def update(self, raw: int, floor: int = 0, now: Optional[float] = None) -> int:
+        """Feed one frame's raw person count (plus the occupied-zone floor),
+        get the debounced count back."""
+        if now is None:
+            now = time.monotonic()
+        raw = max(0, min(int(raw), self.max_people))
+        for v in range(1, self.max_people + 1):
+            if raw >= v:
+                self._streak[v] += 1
+                if self._streak[v] >= self.up_frames:
+                    self._confirmed_at[v] = now
+            else:
+                self._streak[v] = 0
+        confirmed = 0
+        for v in range(1, self.max_people + 1):
+            t = self._confirmed_at[v]
+            if t is not None and (now - t) <= self.hold_s:
+                confirmed = v
+        self.count = max(confirmed, max(0, min(int(floor), self.max_people)))
         return self.count
+
+    @property
+    def camera_count(self) -> int:
+        """Largest camera-confirmed value still inside its hold window
+        (ignores the zone floor) - for log lines."""
+        now = time.monotonic()
+        best = 0
+        for v in range(1, self.max_people + 1):
+            t = self._confirmed_at[v]
+            if t is not None and (now - t) <= self.hold_s:
+                best = v
+        return best
 
     def reset(self):
         self.count = 0
-        self._candidate = 0
-        self._streak = 0
+        self._streak = [0] * (self.max_people + 1)
+        self._confirmed_at = [None] * (self.max_people + 1)
 
 
 @dataclass

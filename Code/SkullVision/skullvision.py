@@ -16,6 +16,8 @@ command below stays behind dry_run and should never be armed.
 
 Published topics (base = MermaidsTale/CaptainsCuffs):
     <base>/system/People     "0".."9" debounced head-count   retained  <- solve target
+                             (camera-confirmed count held people_hold_s, never below the
+                              number of occupied skull zones - see zone_logic.PeopleCounter)
     <base>/system/Skull<N>   "Occupied" | "Empty"      retained
     <base>/vision/status     "ONLINE" | "OFFLINE"      retained, OFFLINE is the LWT
     <base>/vision/summary    JSON snapshot every state change
@@ -315,19 +317,49 @@ def selftest():
     assert r.occupancy[1], "a single dropped frame must not release a zone"
     print("  single dropped frame did not release the zone")
 
-    print("head-count debounce (solve target):")
-    pc = zone_logic.PeopleCounter(stable_frames=3)
-    for _ in range(5):
-        pc.update(2)
-    assert pc.count == 2, "steady count of 2 must latch"
-    pc.update(3); pc.update(3)          # two-frame phantom
-    assert pc.count == 2, "a two-frame phantom must not move the count"
-    pc.update(2)
-    assert pc.count == 2
-    for _ in range(3):
-        pc.update(1)
-    assert pc.count == 1, "a count held for stable_frames must latch"
-    print(f"  phantom ignored, real change latched -> count={pc.count}")
+    print("head-count (solve target):")
+    FPS = 8.0
+    pc = zone_logic.PeopleCounter(up_frames=4, hold_s=10.0)
+    t = [0.0]
+
+    def feed(raw, frames, floor=0):
+        c = None
+        for _ in range(frames):
+            t[0] += 1.0 / FPS
+            c = pc.update(raw, floor=floor, now=t[0])
+        return c
+
+    assert feed(2, 3) == 0, "3 frames of 2 (phantom) must not latch"
+    assert feed(2, 1) == 2, "4th consecutive frame of 2 latches"
+    assert feed(1, 8) == 2, "one person missed for a second must not drop the count"
+    assert feed(0, int(9 * FPS)) == 2, "count holds for hold_s after the last confirmed run"
+    assert feed(0, int(2 * FPS)) == 0, "count falls once hold_s has passed with nobody seen"
+    print("  phantom rejected, real 2 latched, held 10 s through dropouts, then released")
+
+    # Replay of the 2026-09-13 19:32:48-19:33:10 wire log: ONE person at Skull0,
+    # raw count flipping 0/1/2. (value, seconds) runs. The old symmetric
+    # 12-frame debounce never latched and People sat at 0 for the whole test.
+    replay = [(1, .5), (0, .25), (1, .65), (0, .25), (1, .9), (2, .12), (1, 1.4), (0, .5),
+              (1, .27), (0, .12), (1, .12), (0, .4), (1, .5), (0, .12), (1, .38), (0, .12),
+              (1, .6), (0, .12), (1, .15), (2, .15), (0, 1.7), (1, .65), (2, .27), (1, .5),
+              (2, .13), (1, 1.5), (0, .84), (2, .25), (1, .43), (0, 1.1), (1, .27), (0, 1.0),
+              (1, .55), (0, .14), (1, .33), (0, .42), (1, .12), (0, .9), (1, .13), (0, .37)]
+    pc.reset(); t[0] = 0.0
+    seen = []
+    for val, secs in replay:
+        for _ in range(max(1, int(round(secs * FPS)))):
+            t[0] += 1.0 / FPS
+            seen.append(pc.update(val, now=t[0]))
+    first_one = seen.index(1)
+    assert first_one <= 8, f"one person must latch within a second, took {first_one} frames"
+    assert set(seen[first_one:]) == {1}, f"after latching, count must stay 1: {sorted(set(seen[first_one:]))}"
+    print(f"  09-13 flicker replay: People latched 1 at frame {first_one} and never left it")
+
+    print("zone floor:")
+    pc.reset(); t[0] = 0.0
+    assert feed(0, 4, floor=1) == 1, "an occupied skull zone is a person even if the count says 0"
+    assert feed(0, 4, floor=0) == 0, "floor is not sticky on its own"
+    print("  occupied zone raises the count; released zone lets it fall")
 
     print("\nAll logic checks passed.")
 
@@ -403,7 +435,8 @@ def main():
         min_people=int(pz.get("min_people", 1)),
     )
 
-    people = zone_logic.PeopleCounter(stable_frames=int(pz.get("people_frames", 12)))
+    people = zone_logic.PeopleCounter(up_frames=int(pz.get("people_up_frames", 4)),
+                                      hold_s=float(pz.get("people_hold_s", 10.0)))
     republish_s = float(pz.get("republish_s", 60.0))
     puzzle_occupancy = {}
 
@@ -425,8 +458,10 @@ def main():
     last_solve_at: Optional[float] = None
     last_summary = None
 
-    log.info("Watching %d zones, enabled: %s; head-count latches after %d stable frames",
-             len(zones), puzzle.enabled, people.stable_frames)
+    log.info("Watching %d zones, enabled: %s; head-count confirms after %d frames, holds %.0fs, "
+             "floor = occupied skulls", len(zones), puzzle.enabled, people.up_frames, people.hold_s)
+    raw_tally = {}
+    last_tally_log = time.time()
 
     while _running:
         loop_start = time.time()
@@ -451,11 +486,24 @@ def main():
             log.info("%s -> %s", name, "OCCUPIED" if now_on else "EMPTY")
             mqtt_pub.publish(f"system/{name}", "Occupied" if now_on else "Empty", retain=True)
 
+        occupied_n = sum(1 for zid in puzzle.enabled if result.occupancy.get(zid))
         before = people.count
-        if people.update(result.people_count) != before:
-            log.info("People -> %d (solve target: %d skull%s touched)",
-                     people.count, people.count, "" if people.count == 1 else "s")
+        if people.update(result.people_count, floor=occupied_n) != before:
+            log.info("People -> %d (camera %d, occupied skulls %d; solve target: %d skull%s touched)",
+                     people.count, people.camera_count, occupied_n,
+                     people.count, "" if people.count == 1 else "s")
             mqtt_pub.publish("system/People", str(people.count), retain=True)
+
+        # Raw-count tally every 5 s while anything is going on, so the next
+        # "why didn't it solve" can be answered from this log alone.
+        raw_tally[result.people_count] = raw_tally.get(result.people_count, 0) + 1
+        if (time.time() - last_tally_log) >= 5.0:
+            if people.count or occupied_n or any(raw_tally):
+                log.info("raw people last 5s: %s -> People %d (camera %d, occupied %d)",
+                         " ".join(f"{k}x{raw_tally[k]}" for k in sorted(raw_tally)),
+                         people.count, people.camera_count, occupied_n)
+            raw_tally = {}
+            last_tally_log = time.time()
 
         if (time.time() - last_republish) >= republish_s:
             publish_retained_state()
