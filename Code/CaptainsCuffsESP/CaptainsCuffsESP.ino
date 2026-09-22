@@ -1,7 +1,8 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.5.0"
+#define VERSION "1.5.1"   // 1.5.1 (2026-09-22): WiFi sleep OFF, non-blocking MQTT reconnect, RSSI + reconnect count in the heartbeat log.
+                          // Why: first live game - the board dropped its link 20x in an hour (16-63 s each); a solve landed 30 s late.
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "CaptainsCuffs"
@@ -45,6 +46,10 @@ bool loadedStatus = false;
 String incoming = "";
 
 const unsigned long heartBeatPulse = 5 * 1000UL;
+unsigned long lastMqttAttempt = 0;      // non-blocking reconnect pacing (v1.5.1)
+unsigned long lastWifiKick = 0;
+unsigned long mqttLostAt = 0;           // millis() when the link was last seen down (0 = up)
+unsigned int  mqttReconnects = 0;
 
 unsigned long lastTime = 0;
 
@@ -56,17 +61,36 @@ void setupWiFi() {
   Serial.print("Connecting to SSID: ");
   Serial.println(WIFI_SSID);
 
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);   // v1.5.1: modem sleep made the link flap (missed keepalives)
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
   WiFi.begin(WIFI_SSID,WIFI_PASS);
 
-  while(WiFi.status() != WL_CONNECTED){
+  unsigned long t0 = millis();
+  while(WiFi.status() != WL_CONNECTED && millis() - t0 < 20000UL){   // bounded: the main loop keeps retrying
     delay(100);
     Serial.print("-");
   }
-  Serial.println("\nConnected.");
+  Serial.println(WiFi.status() == WL_CONNECTED ? "\nConnected." : "\nWiFi not up yet - continuing, will retry in loop.");
 }
 //========== MQTT SERVER ================
 void connectMQTT() {
-  while (!mqttClient.connected()) {
+  // v1.5.1: NON-BLOCKING. One attempt every 2 s; never delay() the loop, so the
+  // Mega's serial messages keep being read while the link is down.
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastWifiKick > 10000UL) {
+      lastWifiKick = millis();
+      Serial.println("WiFi down - reconnect kick");
+      WiFi.reconnect();
+    }
+    if (mqttLostAt == 0) mqttLostAt = millis();
+    return;
+  }
+  if (millis() - lastMqttAttempt < 2000UL) return;
+  lastMqttAttempt = millis();
+  if (mqttLostAt == 0) mqttLostAt = millis();
+  {
     Serial.print("Connecting to MQTT...");
 
     String clientId = PROP_NAME;
@@ -92,15 +116,21 @@ void connectMQTT() {
       // Announce we're online
       mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
       mqttClient.publish(MQTT_TOPIC_SOLVED, puzzleSolved ? "true" : "false", true);
-      mqttLogf("%s v%s online", PROP_NAME, VERSION);
+      if (mqttReconnects > 0) {
+        unsigned long down = mqttLostAt ? (millis() - mqttLostAt) / 1000UL : 0;
+        mqttLogf("%s v%s online (reconnect #%u after %lus down, rssi=%d)", PROP_NAME, VERSION, mqttReconnects, down, WiFi.RSSI());
+      } else {
+        mqttLogf("%s v%s online (boot, rssi=%d)", PROP_NAME, VERSION, WiFi.RSSI());
+      }
+      mqttReconnects++;
+      mqttLostAt = 0;
 
       // Any (re)connect may have missed sensor changes while offline —
       // request a full status dump from the Mega to re-sync MQTT state.
       loadedStatus = false;
 
     } else {
-      Serial.printf("failed (rc=%d), retrying in 5s\n", mqttClient.state());
-      delay(5000);
+      Serial.printf("failed (rc=%d), retry in 2s\n", mqttClient.state());
     }
   }
 }
@@ -246,6 +276,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 void setupMQTT() {
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+  mqttClient.setKeepAlive(15);
+  mqttClient.setSocketTimeout(5);      // v1.5.1: a dead socket is noticed in 5 s, not 15
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);  // Increase if needed
 }
@@ -267,9 +299,11 @@ void heartBeat(){
   if(!(currentTime - lastTime > heartBeatPulse))
     return;
   lastTime = currentTime;
-  // Announce we're online
+  // Announce we're online (status text unchanged for WatchTower/M3; RSSI rides on the log line + its own topic)
   mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
-  mqttLogf("%s v%s online", PROP_NAME, VERSION);
+  mqttLogf("%s v%s online rssi=%d reconnects=%u", PROP_NAME, VERSION, WiFi.RSSI(), mqttReconnects);
+  char rssi[8]; snprintf(rssi, sizeof(rssi), "%d", WiFi.RSSI());
+  mqttClient.publish(MQTT_TOPIC_SYSTEM "/RSSI", rssi);
 }
 
 /*
