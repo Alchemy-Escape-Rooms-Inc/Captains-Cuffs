@@ -1,7 +1,8 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "1.5.1"   // 1.5.1 (2026-09-22): WiFi sleep OFF, non-blocking MQTT reconnect, RSSI + reconnect count in the heartbeat log.
+#define VERSION "1.5.2"   // 1.5.2: WiFi join is left alone for 60 s before any reconnect kick (1.5.1 kicked every 10 s = could never finish joining on a weak signal).
+                          //   // 1.5.1 (2026-09-22): WiFi sleep OFF, non-blocking MQTT reconnect, RSSI + reconnect count in the heartbeat log.
                           // Why: first live game - the board dropped its link 20x in an hour (16-63 s each); a solve landed 30 s late.
 
 #define GAME_NAME "MermaidsTale"
@@ -68,20 +69,26 @@ void setupWiFi() {
   WiFi.begin(WIFI_SSID,WIFI_PASS);
 
   unsigned long t0 = millis();
-  while(WiFi.status() != WL_CONNECTED && millis() - t0 < 20000UL){   // bounded: the main loop keeps retrying
+  while(WiFi.status() != WL_CONNECTED && millis() - t0 < 60000UL){   // bounded: the main loop keeps retrying
     delay(100);
     Serial.print("-");
   }
-  Serial.println(WiFi.status() == WL_CONNECTED ? "\nConnected." : "\nWiFi not up yet - continuing, will retry in loop.");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("\nConnected. IP "); Serial.print(WiFi.localIP()); Serial.print(" rssi "); Serial.println(WiFi.RSSI());
+  } else {
+    Serial.print("\nWiFi not up after 60 s (status "); Serial.print(WiFi.status()); Serial.println(") - continuing, auto-reconnect keeps trying.");
+  }
+  lastWifiKick = millis();
 }
 //========== MQTT SERVER ================
 void connectMQTT() {
   // v1.5.1: NON-BLOCKING. One attempt every 2 s; never delay() the loop, so the
   // Mega's serial messages keep being read while the link is down.
   if (WiFi.status() != WL_CONNECTED) {
-    if (millis() - lastWifiKick > 10000UL) {
+    // The SDK's auto-reconnect owns the join. Only if it has been down a full 60 s do we kick it once.
+    if (millis() - lastWifiKick > 60000UL) {
       lastWifiKick = millis();
-      Serial.println("WiFi down - reconnect kick");
+      Serial.print("WiFi down 60 s (status "); Serial.print(WiFi.status()); Serial.println(") - reconnect kick");
       WiFi.reconnect();
     }
     if (mqttLostAt == 0) mqttLostAt = millis();
